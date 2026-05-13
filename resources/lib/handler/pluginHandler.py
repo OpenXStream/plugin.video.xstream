@@ -495,7 +495,7 @@ class cPluginHandler:
         for fileName in fileNames:
             pluginData = self.__getPluginDataIndex(fileName, self.defaultFolder) # Hole Plugin Daten
             list_of_plugins.append(pluginData)
-        result_list = [''.join([f"{key}:  {value}\n" for key, value in dictionary.items()]) for dictionary in list_of_plugins]
+        result_list = [''.join([f"{key}:  {value}\n" for key, value in dictionary.items()]) for dictionary in list_of_plugins if isinstance(dictionary, dict)]
         # String Übersetzungen
         result_string = '\n'.join(result_list)
         result_string = result_string.replace('name', cConfig().getLocalizedString(30423))
