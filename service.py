@@ -34,6 +34,7 @@ def _resolverUpdate():
     """Resolver Update im Hintergrund - gibt Status zurück für Notification."""
     try:
         if not os.path.isfile(RESOLVE_SHA) or cConfig().getSetting('githubUpdateResolver') == 'true':
+            logger.info('-> [xstream]: resolverUpdate')
             status = updateManager.resolverUpdate()
             return status
     except Exception:
@@ -45,27 +46,29 @@ def _resolverUpdate():
 
 def main():
     cConfig().setSetting(cConfig().getAddonInfo('id') + '_main', 'running')
-
-    # Resolver Update und Domain Check parallel starten
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        # Resolver läuft im Hintergrund
-        resolver_future = executor.submit(_resolverUpdate)
-
-        # Domain Check läuft gleichzeitig im Main Thread
-        cPluginHandler().checkDomain()
-
-        # Warte auf Resolver (falls noch nicht fertig auf false setzen = fehler bei update meldung)
-        try:
-            resolver_status = resolver_future.result(timeout=18)
-        except Exception:
-            resolver_status = False
-
-    # Wenn neue settings vorhanden oder geändert in addon_data dann starte Pluginhandler und aktualisiere die PluginDB um Daten von checkDomain mit aufzunehmen
     try:
-        if cConfig().getSetting('newSetting') == 'true':
-            cPluginHandler().getAvailablePlugins()
-    except Exception:
-        pass
+        # Resolver Update und Domain Check parallel starten
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            # Resolver läuft im Hintergrund
+            resolver_future = executor.submit(_resolverUpdate)
+
+            # Domain Check läuft gleichzeitig im Main Thread
+            cPluginHandler().checkDomain()
+
+            # Warte auf Resolver (falls noch nicht fertig auf false setzen = fehler bei update meldung)
+            try:
+                resolver_status = resolver_future.result(timeout=18)
+            except Exception:
+                resolver_status = False
+
+        # Wenn neue settings vorhanden oder geändert in addon_data dann starte Pluginhandler und aktualisiere die PluginDB um Daten von checkDomain mit aufzunehmen
+        try:
+            if cConfig().getSetting('newSetting') == 'true':
+                cPluginHandler().getAvailablePlugins()
+        except Exception:
+            pass
+    except Exception as e:
+        logger.error('Service Error: %s' % e)
 
     # getAvailablePlugins must be finished before the main menu can be started!
     cConfig().setSetting(cConfig().getAddonInfo('id') + '_main', 'finished')
