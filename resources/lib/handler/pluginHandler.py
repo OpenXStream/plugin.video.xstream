@@ -415,7 +415,7 @@ class cPluginHandler:
             plugin = __import__(fileName, globals(), locals())
             pluginData['name'] = plugin.SITE_NAME
         except Exception as e:
-            logger.error(" -> [pluginHandler]: Can't import plugin: %s" % fileName)
+            logger.error(f" -> [pluginHandler]: Can't import plugin: {fileName} -> {e}")
             return False
         try:
             pluginData['identifier'] = plugin.SITE_IDENTIFIER
@@ -495,7 +495,7 @@ class cPluginHandler:
         for fileName in fileNames:
             pluginData = self.__getPluginDataIndex(fileName, self.defaultFolder) # Hole Plugin Daten
             list_of_plugins.append(pluginData)
-        result_list = [''.join([f"{key}:  {value}\n" for key, value in dictionary.items()]) for dictionary in list_of_plugins if isinstance(dictionary, dict)]
+        result_list = [''.join([f"{key}:  {value}\n" for key, value in dictionary.items()]) for dictionary in list_of_plugins]
         # String Übersetzungen
         result_string = '\n'.join(result_list)
         result_string = result_string.replace('name', cConfig().getLocalizedString(30423))
