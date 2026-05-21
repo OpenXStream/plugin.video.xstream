@@ -143,8 +143,10 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False, sSearchPageText =
     for sName, sUrl, sThumbnail, sYear in aResult:
         if sSearchText and not cParser.search(sSearchText, sName):
             continue
+
         if sThumbnail[0] == '/':
             sThumbnail = sThumbnail[1:]
+            sThumbnail = URL_MAIN + sThumbnail
         
         from resources.lib.tmdb import cTMDB
         oMetaget = cTMDB()
@@ -158,7 +160,7 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False, sSearchPageText =
                 isTvshow = True
     
         oGuiElement = cGuiElement(sName, SITE_IDENTIFIER, 'showEpisodes' if isTvshow else 'showHosters')
-        oGuiElement.setThumbnail(URL_MAIN + sThumbnail)
+        oGuiElement.setThumbnail(sThumbnail)
         oGuiElement.setMediaType('movie')
         #oGuiElement.setYear(sYear) #ToDo sYear erzeugt falschen Suchstring in tmdb.py (re.sub in tmdb.py)
         params.setParam('entryUrl', sUrl)
