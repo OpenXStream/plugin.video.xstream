@@ -21,6 +21,24 @@ class cTMDB:
         self.poster = 'https://image.tmdb.org/t/p/%s' % cConfig().getSetting('poster_tmdb')
         self.fanart = 'https://image.tmdb.org/t/p/%s' % cConfig().getSetting('backdrop_tmdb')
         
+    def search(self, pName, year=None, page=1):
+        name = re.sub(' +', ' ', pName)
+        
+        if year:
+            name = re.sub(str(year), '', name).strip()
+        
+        term = quote_plus(name)
+        cacheKey = f'search/multi?query={term}&page={page}'
+        sContent = self.cache.get(cacheKey)
+        if not sContent:
+            meta = self._call('search/multi', 'query=' + term + '&page=' + str(page))
+            if 'errors' not in meta and 'status_code' not in meta and 'results' in meta and len(meta['results']) > 0:
+                sContent = meta['results'][0]
+                self.cache.set(cacheKey, sContent)
+                return sContent
+        else:
+            return sContent
+        return {}
 
     def search_movie_name(self, name, year='', page=1, advanced='false'):
         name = re.sub(' +', ' ', name)

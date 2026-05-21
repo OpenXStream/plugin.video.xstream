@@ -8,6 +8,7 @@
 # showEpisodes:   4 Stunden
 
 import xbmcgui
+import re
 from resources.lib.handler.ParameterHandler import ParameterHandler
 from resources.lib.handler.requestHandler import cRequestHandler
 from resources.lib.logger import logger
@@ -144,8 +145,19 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False, sSearchPageText =
             continue
         if sThumbnail[0] == '/':
             sThumbnail = sThumbnail[1:]
-
-        oGuiElement = cGuiElement(sName, SITE_IDENTIFIER, 'showHosters')
+        
+        from resources.lib.tmdb import cTMDB
+        oMetaget = cTMDB()
+        if not oMetaget:
+            isTvshow = False
+        else:
+            meta = oMetaget.search(sName)
+            if meta.get('media_type') and meta.get('media_type') == 'movie':
+                isTvshow = False
+            else:
+                isTvshow = True
+    
+        oGuiElement = cGuiElement(sName, SITE_IDENTIFIER, 'showEpisodes' if isTvshow else 'showHosters')
         oGuiElement.setThumbnail(URL_MAIN + sThumbnail)
         oGuiElement.setMediaType('movie')
         #oGuiElement.setYear(sYear) #ToDo sYear erzeugt falschen Suchstring in tmdb.py (re.sub in tmdb.py)
@@ -217,27 +229,52 @@ def showSeries(entryUrl=False, sGui=False, sSearchText=False): # Neu eingebaut d
         oGui.setView('tvshows')
         oGui.setEndOfDirectory()
 
-
 def showEpisodes():
     params = ParameterHandler()
-    entryUrl = params.getValue('entryUrl')
+    # Parameter laden
+    sUrl = params.getValue('entryUrl')
     sThumbnail = params.getValue('sThumbnail')
-    sHtmlContent = cRequestHandler(entryUrl).request()
-    isMatch, aResult = cParser.parse(sHtmlContent, 'data-num="([^"]+)')
-    if not isMatch:
+    isDesc = params.getValue('sDesc')
+    oRequest = cRequestHandler(sUrl)
+    sHtmlContent = oRequest.request()
+    #
+    patternImdb = r"var imdb = 'tt(\d+)'"
+    isMatch, imbdId = cParser.parseSingleResult(sHtmlContent, patternImdb)
+    episodesUrl = f'https://meinecloud.click/serial/{imbdId}'
+    oRequest = cRequestHandler(episodesUrl)
+    sHtmlContent = oRequest.request()
+    patternEpisode = r'data-link="([^"]+)"[^>]*data-label="([^"]+)"'
+    isMatch, aResult = cParser.parse(sHtmlContent, patternEpisode)
+    #
+    if isMatch:
+        total = len(aResult)
+        for link, label in aResult:
+            oGuiElement = cGuiElement(cConfig().getLocalizedString(30512) + ' ' + str(label), SITE_IDENTIFIER, 'showEpisodeHosters')
+            oGuiElement.setMediaType('episode')
+            oGuiElement.setThumbnail(sThumbnail)
+            # Description separat holen
+            patternDesc = r'data-label="' + re.escape(label) + r'".*?<div class="_ep-d">([^<]+)</div>'
+            isMatchDesc, description = cParser.parseSingleResult(sHtmlContent, patternDesc)
+            if isMatchDesc:
+                oGuiElement.setDescription(description)
+            params.setParam('entryUrl', f'https:{link}')
+            cGui().addFolder(oGuiElement, params, False, total)
+    else:
         cGui().showInfo()
-        return
 
-    total = len(aResult)
-    for sName in aResult:
-        oGuiElement = cGuiElement(sName, SITE_IDENTIFIER, 'showHosters')
-        oGuiElement.setThumbnail(sThumbnail)
-        oGuiElement.setMediaType('episode')
-        params.setParam('entryUrl', entryUrl)
-        params.setParam('episode', sName)
-        cGui().addFolder(oGuiElement, params, False, total)
-    cGui().setView('episodes')
+    cGui().setView('seasons')
     cGui().setEndOfDirectory()
+    
+def showEpisodeHosters():
+    hosters = []
+    params = ParameterHandler()
+    sUrl = params.getValue('entryUrl')
+    hoster = {'link': sUrl, 'name': cParser.urlparse(sUrl)}
+    hosters.append(hoster)
+    if hosters:
+        hosters.append('getHosterUrl')
+    return hosters
+
 
 
 def showHosters():
