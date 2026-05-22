@@ -1,5 +1,5 @@
 <?xml version='1.0' encoding='utf-8'?>
-<addon id="plugin.video.xstream" name="xStream" version="2026.05.21" provider-name="Modded by Akisame">
+<addon id="plugin.video.xstream" name="xStream" version="2026.05.22" provider-name="Modded by Akisame">
 	<requires>
 		<import addon="xbmc.python" version="3.0.0" />
 		<import addon="script.module.requests" />
