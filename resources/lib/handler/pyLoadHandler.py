@@ -5,7 +5,7 @@ import sys
 
 from resources.lib.config import cConfig
 from resources.lib.gui.gui import cGui
-from resources.lib.logger import Logger as logger
+from resources.lib.logger import logger
 from urllib.request import Request, urlopen, build_opener
 from urllib.error import HTTPError
 from urllib.parse import urlencode, quote_plus

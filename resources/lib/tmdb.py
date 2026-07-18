@@ -8,6 +8,7 @@ import re
 from resources.lib.handler.requestHandler import cRequestHandler
 from resources.lib.config import cConfig
 from urllib.parse import quote_plus
+from resources.lib.cache import cCache
 
 class cTMDB:
     TMDB_GENRES = {12: 'Abenteuer', 14: 'Fantasy', 16: 'Animation', 18: 'Drama', 27: 'Horror', 28: 'Action', 35: 'Komödie', 36: 'Historie', 37: 'Western', 53: 'Thriller', 80: 'Krimi', 99: 'Dokumentarfilm', 878: 'Science Fiction', 9648: 'Mystery', 10402: 'Musik', 10749: 'Liebesfilm', 10751: 'Familie', 10752: 'Kriegsfilm', 10759: 'Action & Adventure', 10762: 'Kids', 10763: 'News', 10764: 'Reality', 10765: 'Sci-Fi & Fantasy', 10766: 'Soap', 10767: 'Talk', 10768: 'War & Politics', 10770: 'TV-Film'}
@@ -20,7 +21,26 @@ class cTMDB:
         self.lang = lang
         self.poster = 'https://image.tmdb.org/t/p/%s' % cConfig().getSetting('poster_tmdb')
         self.fanart = 'https://image.tmdb.org/t/p/%s' % cConfig().getSetting('backdrop_tmdb')
+        self.cache = cCache()
         
+    def search(self, pName, year=None, page=1):
+        name = re.sub(' +', ' ', pName)
+        
+        if year:
+            name = re.sub(str(year), '', name).strip()
+        
+        term = quote_plus(name)
+        cacheKey = f'search/multi?query={term}&page={page}'
+        sContent = self.cache.get(cacheKey)
+        if not sContent:
+            meta = self._call('search/multi', 'query=' + term + '&page=' + str(page))
+            if 'errors' not in meta and 'status_code' not in meta and 'results' in meta and len(meta['results']) > 0:
+                sContent = meta['results'][0]
+                self.cache.set(cacheKey, sContent)
+                return sContent
+        else:
+            return sContent
+        return {}
 
     def search_movie_name(self, name, year='', page=1, advanced='false'):
         name = re.sub(' +', ' ', name)

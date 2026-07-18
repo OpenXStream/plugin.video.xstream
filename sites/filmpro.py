@@ -132,7 +132,7 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False, sSearchPageText =
         isQuality, sQuality = cParser.parseSingleResult(sDummy, 'Qlty">([^<]+)</span>')  # Qualität
         isDesc, sDesc = cParser.parseSingleResult(sDummy, 'Description"><p>([^<]+)')  # Beschreibung
         sThumbnail = URL_MAIN + sThumbnail
-        oGuiElement = cGuiElement(sName, SITE_IDENTIFIER, 'showSeasons' if isTvshow else 'showHosters')
+        oGuiElement = cGuiElement(sName, SITE_IDENTIFIER, 'showEpisodes' if isTvshow else 'showHosters')
         if isYear:
             oGuiElement.setYear(sYear)
         if isDuration:
@@ -186,7 +186,7 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False, sSearchPageText =
         oGui.setEndOfDirectory()
 
 
-def showSeasons():
+def showEpisodes():
     params = ParameterHandler()
     # Parameter laden
     sUrl = params.getValue('entryUrl')
@@ -194,87 +194,44 @@ def showSeasons():
     isDesc = params.getValue('sDesc')
     oRequest = cRequestHandler(sUrl)
     sHtmlContent = oRequest.request()
-    pattern = '<div class="tt_season">(.*)</ul>'
-    isMatch, sHtmlContainer = cParser.parseSingleResult(sHtmlContent, pattern)
+    #
+    patternImdb = r"var imdb = 'tt(\d+)'"
+    isMatch, imbdId = cParser.parseSingleResult(sHtmlContent, patternImdb)
+    episodesUrl = f'https://meinecloud.click/serial/{imbdId}'
+    oRequest = cRequestHandler(episodesUrl)
+    sHtmlContent = oRequest.request()
+    patternEpisode = r'data-link="([^"]+)"[^>]*data-label="([^"]+)"'
+    isMatch, aResult = cParser.parse(sHtmlContent, patternEpisode)
+    #
     if isMatch:
-        isMatch, aResult = cParser.parse(sHtmlContainer, r'"#season-(\d+)')
-    if not isMatch:
+        total = len(aResult)
+        for link, label in aResult:
+            oGuiElement = cGuiElement(cConfig().getLocalizedString(30512) + ' ' + str(label), SITE_IDENTIFIER, 'showEpisodeHosters')
+            oGuiElement.setMediaType('episode')
+            oGuiElement.setThumbnail(sThumbnail)
+            # Description separat holen
+            patternDesc = r'data-label="' + re.escape(label) + r'".*?<div class="_ep-d">([^<]+)</div>'
+            isMatchDesc, description = cParser.parseSingleResult(sHtmlContent, patternDesc)
+            if isMatchDesc:
+                oGuiElement.setDescription(description)
+            params.setParam('entryUrl', f'https:{link}')
+            cGui().addFolder(oGuiElement, params, False, total)
+    else:
         cGui().showInfo()
-        return
-    total = len(aResult)
-    for sSeason in aResult:
-        oGuiElement = cGuiElement(cConfig().getLocalizedString(30512) + ' ' + str(sSeason), SITE_IDENTIFIER, 'showEpisodes')
-        oGuiElement.setSeason(sSeason)
-        oGuiElement.setMediaType('season')
-        oGuiElement.setThumbnail(sThumbnail)
-        if isDesc:
-            oGuiElement.setDescription(isDesc)
-        cGui().addFolder(oGuiElement, params, True, total)
+
     cGui().setView('seasons')
     cGui().setEndOfDirectory()
-
-
-def showEpisodes():
-    params = ParameterHandler()
-    # Parameter laden
-    entryUrl = params.getValue('entryUrl')
-    sThumbnail = params.getValue('sThumbnail')
-    sSeason = params.getValue('season')
-    isDesc = params.getValue('sDesc')
-    oRequest = cRequestHandler(entryUrl)
-    sHtmlContent = oRequest.request()
-    pattern = 'id="season-%s(.*?)</ul>' % sSeason
-    isMatch, sHtmlContainer = cParser.parseSingleResult(sHtmlContent, pattern)
-    if isMatch:
-        isMatch, aResult = cParser.parse(sHtmlContainer, r'data-title="Episode\s(\d+)')
-    if not isMatch:
-        cGui().showInfo()
-        return
-
-    total = len(aResult)
-    for sEpisode in aResult:
-        oGuiElement = cGuiElement(cConfig().getLocalizedString(30513) + ' ' + str(sEpisode), SITE_IDENTIFIER, 'showEpisodeHosters')
-        oGuiElement.setThumbnail(sThumbnail)
-        if isDesc:
-            oGuiElement.setDescription(isDesc)
-        oGuiElement.setMediaType('episode')
-        params.setParam('entryUrl', entryUrl)
-        params.setParam('season', sSeason)
-        params.setParam('episode', sEpisode)
-        cGui().addFolder(oGuiElement, params, False, total)
-    cGui().setView('episodes')
-    cGui().setEndOfDirectory()
-
-
+    
 def showEpisodeHosters():
     hosters = []
     params = ParameterHandler()
-    # Parameter laden
     sUrl = params.getValue('entryUrl')
-    sSeason = params.getValue('season')
-    sEpisode = params.getValue('episode')
-    sHtmlContent = cRequestHandler(sUrl, caching=False).request()
-    pattern = 'id="season-%s">(.*?)</ul>' % sSeason
-    isMatch, sHtmlContainer = cParser.parseSingleResult(sHtmlContent, pattern)
-    if isMatch:
-        pattern = '>%s</a>(.*?)</li>' % sEpisode
-        isMatch, sHtmlLink = cParser.parseSingleResult(sHtmlContainer, pattern)
-        if isMatch:
-            isMatch, aResult = cParser.parse(sHtmlLink, 'data-link="([^"]+)')
-            if isMatch:
-                sQuality = '720'
-                for sUrl in aResult:
-                    if 'youtube' in sUrl:
-                        continue
-                    elif sUrl.startswith('//'):
-                        sUrl = 'https:' + sUrl
-                    sName = cParser.urlparse(sUrl).split('.')[0].strip()
-                    if cConfig().isBlockedHoster(sName)[0]: continue  # Hoster aus settings.xml oder deaktivierten Resolver ausschließen
-                    hoster = {'link': sUrl, 'name': sName, 'displayedName': '%s [I][%sp][/I]' % (sName, sQuality), 'quality': sQuality}
-                    hosters.append(hoster)
+    hoster = {'link': sUrl, 'name': cParser.urlparse(sUrl)}
+    hosters.append(hoster)
     if hosters:
         hosters.append('getHosterUrl')
     return hosters
+
 
 
 def showHosters():

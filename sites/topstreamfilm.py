@@ -8,6 +8,7 @@
 # showEpisodes:   4 Stunden
     
 import xbmcgui
+import re
 from resources.lib.handler.ParameterHandler import ParameterHandler
 from resources.lib.handler.requestHandler import cRequestHandler
 from resources.lib.logger import logger
@@ -113,6 +114,7 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False, sSearchPageText =
             oMetaget = cTMDB()
             if not oMetaget:
                 isTvshow = False
+                logger.debug(f'{sName}: its not a tvshow says cTMDB because we could not find it')
             else:
                 if isYear:
                     meta = oMetaget.search_movie_name(sName, year=sYear)
@@ -120,8 +122,10 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False, sSearchPageText =
                     meta = oMetaget.search_movie_name(sName)
                 if meta and 'id' in meta:
                     isTvshow = False
+                    logger.debug(f'{sName}: its not a tvshow says cTMDB')
                 else:
                     isTvshow = True
+                    logger.debug(f'{sName}: its a tvshow says cTMDB')
         if 'South Park: The End Of Obesity' in sName:
             isTvshow = False
         isQuality, sQuality = cParser.parseSingleResult(sDummy, 'Qlty">([^<]+)</span>')  # Qualität
@@ -165,8 +169,13 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False, sSearchPageText =
         oGui.setView('tvshows' if isTvshow else 'movies')
         oGui.setEndOfDirectory()
 
-
 def showSeasons():
+    isOldFormat = showSeasons1()
+    if not isOldFormat:
+        showSeasons2()
+    
+def showSeasons1():
+    logger.debug(f'showSeasons1');
     params = ParameterHandler()
     # Parameter laden
     sUrl = params.getValue('entryUrl')
@@ -179,11 +188,12 @@ def showSeasons():
     if isMatch:
         isMatch, aResult = cParser.parse(sHtmlContainer, r'"#season-(\d+)')
     if not isMatch:
-        cGui().showInfo()
-        return
+        logger.debug(f'showSeasons1 - no match');
+        #cGui().showInfo()
+        return False
     total = len(aResult)
     for sSeason in aResult:
-        oGuiElement = cGuiElement(cConfig().getLocalizedString(30512) + ' ' + str(sSeason), SITE_IDENTIFIER, 'showEpisodes')
+        oGuiElement = cGuiElement(cConfig().getLocalizedString(30512) + ' ' + str(sSeason), SITE_IDENTIFIER, 'showEpisodes1')
         oGuiElement.setSeason(sSeason)
         oGuiElement.setMediaType('season')
         oGuiElement.setThumbnail(sThumbnail)
@@ -192,9 +202,10 @@ def showSeasons():
         cGui().addFolder(oGuiElement, params, True, total)
     cGui().setView('seasons')
     cGui().setEndOfDirectory()
+    return True
 
-
-def showEpisodes():
+def showEpisodes1():
+    logger.debug(f'showEpisodes1');
     params = ParameterHandler()
     # Parameter laden
     entryUrl = params.getValue('entryUrl')
@@ -213,7 +224,7 @@ def showEpisodes():
 
     total = len(aResult)
     for sEpisode in aResult:
-        oGuiElement = cGuiElement(cConfig().getLocalizedString(30513) + ' ' + str(sEpisode), SITE_IDENTIFIER, 'showEpisodeHosters')
+        oGuiElement = cGuiElement(cConfig().getLocalizedString(30513) + ' ' + str(sEpisode), SITE_IDENTIFIER, 'showEpisodeHosters1')
         oGuiElement.setThumbnail(sThumbnail)
         if isDesc:
             oGuiElement.setDescription(isDesc)
@@ -226,7 +237,8 @@ def showEpisodes():
     cGui().setEndOfDirectory()
 
 
-def showEpisodeHosters():
+def showEpisodeHosters1():
+    logger.debug(f'showEpisodeHosters1');
     hosters = []
     params = ParameterHandler()
     # Parameter laden
@@ -256,8 +268,56 @@ def showEpisodeHosters():
         hosters.append('getHosterUrl')
     return hosters
 
+def showSeasons2():
+    logger.debug(f'showSeasons2');
+    params = ParameterHandler()
+    # Parameter laden
+    sUrl = params.getValue('entryUrl')
+    sThumbnail = params.getValue('sThumbnail')
+    isDesc = params.getValue('sDesc')
+    oRequest = cRequestHandler(sUrl)
+    sHtmlContent = oRequest.request()
+    #
+    patternImdb = r"var imdb = 'tt(\d+)'"
+    isMatch, imbdId = cParser.parseSingleResult(sHtmlContent, patternImdb)
+    episodesUrl = f'https://meinecloud.click/serial/{imbdId}'
+    oRequest = cRequestHandler(episodesUrl)
+    sHtmlContent = oRequest.request()
+    patternEpisode = r'data-link="([^"]+)"[^>]*data-label="([^"]+)"'
+    isMatch, aResult = cParser.parse(sHtmlContent, patternEpisode)
+    #
+    if isMatch:
+        total = len(aResult)
+        for link, label in aResult:
+            oGuiElement = cGuiElement(cConfig().getLocalizedString(30512) + ' ' + str(label), SITE_IDENTIFIER, 'showEpisodeHosters2')
+            oGuiElement.setMediaType('episode')
+            oGuiElement.setThumbnail(sThumbnail)
+            # Description separat holen
+            patternDesc = r'data-label="' + re.escape(label) + r'".*?<div class="_ep-d">([^<]+)</div>'
+            isMatchDesc, description = cParser.parseSingleResult(sHtmlContent, patternDesc)
+            if isMatchDesc:
+                oGuiElement.setDescription(description)
+            params.setParam('entryUrl', f'https:{link}')
+            cGui().addFolder(oGuiElement, params, False, total)
+    else:
+        cGui().showInfo()
+
+    cGui().setView('seasons')
+    cGui().setEndOfDirectory()
+    
+def showEpisodeHosters2():
+    logger.debug(f'showEpisodeHosters2');
+    hosters = []
+    params = ParameterHandler()
+    sUrl = params.getValue('entryUrl')
+    hoster = {'link': sUrl, 'name': cParser.urlparse(sUrl)}
+    hosters.append(hoster)
+    if hosters:
+        hosters.append('getHosterUrl')
+    return hosters
 
 def showHosters():
+    logger.debug(f'showHosters');
     hosters = []
     params = ParameterHandler()
     sUrl = params.getValue('entryUrl')

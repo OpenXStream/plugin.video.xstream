@@ -2,7 +2,7 @@
 # Python 3
 
 from resources.lib.config import cConfig
-from resources.lib.logger import Logger as logger
+from resources.lib.logger import logger
 from resources.lib.gui.gui import cGui
 from resources.lib.handler.requestHandler import cRequestHandler
 

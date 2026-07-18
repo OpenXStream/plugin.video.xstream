@@ -49,7 +49,7 @@ def parseUrl():
         if sFunction == 'spacer':
             return True
         elif sFunction == 'clearCache':
-            cCache().clearCache()
+            cCache().clearAll()
             return
         elif sFunction == 'viewInfo':
             viewInfo(params)

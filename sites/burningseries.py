@@ -38,7 +38,7 @@ if cConfig().getSetting('2captcha.pass') == '':
     cConfig().setSetting('plugin_burningseries', 'false')
     cConfig().setSetting('global_search_burningseries', 'false')
     cConfig().setSetting('plugin_burningseries_checkDomain', 'false')
-    logger.info('-> [SitePlugin]: 2Captcha API Key not set')
+    logger.info('-> [SitePlugin]: 2Captcha API Key not set - disable ' + SITE_IDENTIFIER)
 
 # Domain Abfrage
 DOMAIN = cConfig().getSetting('plugin_' + SITE_IDENTIFIER + '.domain', 'bs.to') # Domain Auswahl über die xStream Einstellungen möglich
