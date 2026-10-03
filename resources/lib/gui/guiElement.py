@@ -16,7 +16,11 @@ class cGuiElement:
         These arguments are mandatory. If not given on init, they have to be set by their setter-methods, before the GuiElement is added to the Gui.
     '''
     DEFAULT_FOLDER_ICON = 'DefaultFolder.png'
-    DEFAULT_FANART = path.join(cConfig().getAddonInfo('path'), 'fanart.jpg')
+    # Die Datei liegt seit der Umstellung auf den assets-Block unter resources/ —
+    # der frueher hier stehende Pfad <addon>/fanart.jpg zeigte ins Leere, der Default
+    # griff also nie und Kodi nahm das Fanart des Skins. getAddonInfo('fanart') liefert
+    # genau den Pfad, den die addon.xml angibt.
+    DEFAULT_FANART = cConfig().getAddonInfo('fanart') or path.join(cConfig().getAddonInfo('path'), 'resources', 'fanart.jpg')
     MEDIA_TYPES = ['movie', 'tvshow', 'season', 'episode']
 
     def __init__(self, sTitle: object = '', sSite: object = None, sFunction: object = None) -> None:
@@ -72,12 +76,22 @@ class cGuiElement:
     def setTitle(self, sTitle):
         self.__sTitle = cUtil.cleanse_text(sTitle)
 
-    # Sprachen im sName ins GUI Element übernehmen
     def getTitle(self):
-        if ' (19' in self.__sTitle or ' (20' in self.__sTitle:
-            isMatch, aYear = cParser.parse(self.__sTitle, r'(.*?)\((\d{4})\)')
+        # Vorab nur auf eine Klammer pruefen, das Muster darunter verlangt die vier
+        # Ziffern. Der fruehere Vorab-Check auf " (19" / " (20" liess Jahre vor 1900 und
+        # Titel ohne Leerzeichen vor der Klammer durch: die Jahreszahl wurde dann nicht
+        # herausgeloest, unten aber bei jedem Aufruf erneut angehaengt — "Annie Oakley
+        # (1894) (1894) (1894)" bei Internet Archive, "Police Squad!(1982) (1982)".
+        if '(' in self.__sTitle:
+            # Der Teil HINTER der Jahreszahl bleibt erhalten. Frueher nahm das Muster nur
+            # den Text vor der Klammer, alles danach ging verloren: aus "Ranma 1/2 (2024)
+            # 2nd Season Ger Dub" wurde "Ranma 1/2 (2024)" — dadurch hiessen Staffel 1 und
+            # 2 im Menue identisch, und Fassungskennungen wie "Ger Sub" verschwanden
+            # (30 Titel allein im animetoast-Index). Das Jahr haengt die Funktion unten
+            # ohnehin wieder an, deshalb wird es hier nur herausgeloest.
+            isMatch, aYear = cParser.parse(self.__sTitle, r'(.*?)\((\d{4})\)(.*)')
             if isMatch:
-                self.__sTitle = aYear[0][0]
+                self.__sTitle = (aYear[0][0].strip() + ' ' + aYear[0][2].strip()).strip()
                 self.setYear(aYear[0][1])
         if '*19' in self.__sTitle or '*20' in self.__sTitle:
             isMatch, aYear = cParser.parse(self.__sTitle, r'(.*?)\*(\d{4})\*')
@@ -118,7 +132,7 @@ class cGuiElement:
         if mediaType in self.MEDIA_TYPES:
             self._mediaType = mediaType
         else:
-            logger.error('-> [guiElement]: Unknown MediaType given for %s' % self.getTitle())
+            logger.error('Unknown MediaType given for %s' % self.getTitle())
 
     def setSeason(self, season):
         self._season = season
@@ -135,17 +149,17 @@ class cGuiElement:
         try:
             year = int(year)
         except:
-            logger.error('-> [guiElement]: Year given for %s seems not to be a valid number' % self.getTitle())
+            logger.error('Year given for %s seems not to be a valid number' % self.getTitle())
             return False
         if len(str(year)) != 4:
-            logger.error('-> [guiElement]: Year given for %s has %s digits, required 4 digits' % (self.getTitle(), len(str(year))))
+            logger.error('Year given for %s has %s digits, required 4 digits' % (self.getTitle(), len(str(year))))
             return False
         if year > 0:
             self._sYear = str(year)
             self.__aItemValues['year'] = year
             return True
         else:
-            logger.error('-> [guiElement]: Year given for %s must be greater than 0' % self.getTitle())
+            logger.error('Year given for %s must be greater than 0' % self.getTitle())
             return False
 
     def setQuality(self, quality):
@@ -178,7 +192,6 @@ class cGuiElement:
                 self._sQuality = 'TS Line'
             elif 'TS' in quality:
                 self._sQuality = 'TS'
-            #self._sQuality = quality
         except:
             pass
 
@@ -211,7 +224,7 @@ class cGuiElement:
     def setThumbnail(self, sThumbnail):
         self.__sThumbnail = sThumbnail
         try:
-            if cConfig().getSetting('replacefanart') == 'true' and sThumbnail.startswith('http'):
+            if sThumbnail.startswith('http'):
                 self.__sFanart = sThumbnail
         except:
             pass
@@ -343,15 +356,15 @@ class cGuiElement:
         if not self._mediaType:
             self.setMediaType(mediaType)
         if mode not in ['add', 'replace']:
-            logger.error('-> [guiElement]: Wrong meta set mode')
+            logger.error('Wrong meta set mode')
         if not season and self._season:
             season = self._season
         if not episode and self._episode:
             episode = self._episode
         if not self._mediaType:
-            logger.error('-> [guiElement]: Could not get MetaInformations for %s, mediaType not defined' % self.getTitle())
+            logger.error('Could not get MetaInformations for %s, mediaType not defined' % self.getTitle())
             return False
-        from resources.lib.tmdb import cTMDB
+        from resources.lib.tmdb.api import cTMDB
         oMetaget = cTMDB()
         if not oMetaget:
             return False
