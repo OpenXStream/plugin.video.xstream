@@ -63,7 +63,8 @@ def _lateResolverNotify(future):
 
 
 def main():
-    cCache().set(cConfig().getAddonInfo('id') + '_main', 'running')
+    #cCache().set(cConfig().getAddonInfo('id') + '_main', 'running') # cache is cleared frequently, store in settings instead
+    cConfig().setSetting(cConfig().getAddonInfo('id') + '_main', 'running')
 
     # Resolver Update und Domain Check parallel starten.
     # BEWUSST OHNE `with`: beim Verlassen eines with-Blocks ruft Python
@@ -106,7 +107,8 @@ def main():
 
     # Domain Check und Cache-Aufraeumen muessen fertig sein, bevor das Hauptmenue startet
     # (xstream.py wartet auf dieses Flag).
-    cCache().set(cConfig().getAddonInfo('id') + '_main', 'finished')
+    #cCache().set(cConfig().getAddonInfo('id') + '_main', 'finished') # cache is cleared frequently, store in settings instead
+    cConfig().setSetting(cConfig().getAddonInfo('id') + '_main', 'finished')    
 
     # Resolver Notification (nach Domain Check damit sich Notifications nicht überschneiden)
     # Nur anzeigen wenn ein Update Check tatsächlich stattfand (nicht 'skipped').
