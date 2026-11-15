@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # Python 3
 
-from resources.lib.handler.ParameterHandler import ParameterHandler
+from resources.lib.handler.parameterHandler import ParameterHandler
 
 
 class cContextElement:

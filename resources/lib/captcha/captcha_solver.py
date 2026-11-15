@@ -27,25 +27,12 @@ class CaptchaSolver:
 
         Args:
             api_key (str): API-Schlüssel für den Captcha-Dienst
-            provider (str): Captcha-Dienst ('2captcha', '9kw', etc.)
+            provider (str): Captcha-Dienst ('2captcha')
             timeout (int): Maximale Wartezeit in Sekunden
         """
         self.api_key = api_key
         self.provider = provider
         self.timeout = timeout
-        self.is_alive = True  # Für 9kw-Abbruch
-
-    def set_api_key(self, api_key):
-        """Setzt den API-Schlüssel"""
-        self.api_key = api_key
-
-    def set_provider(self, provider):
-        """Setzt den Provider"""
-        self.provider = provider
-
-    def set_kill(self):
-        """Abbruch-Signal für 9kw"""
-        self.is_alive = False
 
     def solve_recaptcha_v2(self, site_key, page_url):
         """
@@ -61,10 +48,60 @@ class CaptchaSolver:
         if self.provider == '2captcha':
             return self._solve_with_2captcha(site_key, page_url)
         # Hier können später weitere Provider hinzugefügt werden
-        elif self.provider == '9kw':
-            return self._solve_with_9kw(site_key, page_url)
-        else:
-            raise ValueError(f"Captcha-Provider '{self.provider}' wird nicht unterstützt")
+        raise ValueError(f"Captcha-Provider '{self.provider}' wird nicht unterstützt")
+
+    def solve_turnstile(self, site_key, page_url):
+        """
+        Löst ein Cloudflare Turnstile (Standalone-Widget auf einer Seite).
+
+        Args:
+            site_key (str): Der Turnstile Site-Key (data-sitekey)
+            page_url (str): Die URL der Seite mit dem Captcha
+
+        Returns:
+            str: Der Captcha-Lösungstoken
+        """
+        if self.provider == '2captcha':
+            return self._solve_turnstile_with_2captcha(site_key, page_url)
+        # Ein zweiter Dienst muesste hier einen eigenen Zweig bekommen
+        raise ValueError(f"Captcha-Provider '{self.provider}' unterstützt kein Turnstile")
+
+    def _solve_turnstile_with_2captcha(self, site_key, page_url):
+        """2Captcha-Implementation für Cloudflare Turnstile"""
+        if not self.api_key:
+            xbmcgui.Dialog().ok(cConfig().getLocalizedString(30241), cConfig().getLocalizedString(30291))
+            return None
+
+        params = {
+            'key': self.api_key,
+            'method': 'turnstile',
+            'sitekey': site_key,
+            'pageurl': page_url,
+            'json': 1,
+        }
+
+        captcha_request = cRequestHandler('https://2captcha.com/in.php', caching=False, method='POST',
+                                          data=json.dumps(params))
+        captcha_request.addHeaderEntry('Content-Type', 'application/json')
+        response_text = captcha_request.request()
+
+        try:
+            json_response = json.loads(response_text)
+        except json.JSONDecodeError:
+            raise Exception(f"Ungültige Antwort vom Captcha-Dienst: {response_text}")
+
+        if 'request' not in json_response:
+            raise Exception(f"Ungültige Antwort vom Captcha-Dienst: {json_response}")
+        # Bei status 0 steht im Feld 'request' der Fehlercode (ERROR_KEY_DOES_NOT_EXIST,
+        # ERROR_ZERO_BALANCE ...) — bis zur 2026.09.10 lief der als Auftrags-ID in den
+        # Abfrage-Loop und res.php wurde einmal umsonst gefragt
+        if json_response.get('status') != 1:
+            raise Exception(f"Captcha-Dienst lehnt die Anfrage ab: {json_response.get('request')}")
+
+        captcha_id = json_response['request']
+        logger.info(f'Turnstile-Anfrage gesendet mit ID: {captcha_id}')
+
+        return self._get_2captcha_result(captcha_id)
 
     def _solve_with_2captcha(self, site_key, page_url):
         """2Captcha-Implementation für reCAPTCHA v2"""
@@ -80,7 +117,6 @@ class CaptchaSolver:
             'json': 1,
         }
 
-        # Captcha-Anfrage senden
         captcha_request = cRequestHandler('https://2captcha.com/in.php', caching=False, method='POST',
                                           data=json.dumps(params))
         captcha_request.addHeaderEntry('Content-Type', 'application/json')
@@ -93,102 +129,62 @@ class CaptchaSolver:
 
         if 'request' not in json_response:
             raise Exception(f"Ungültige Antwort vom Captcha-Dienst: {json_response}")
+        # Gleiche Pruefung wie beim Turnstile: Fehlercode statt Auftrags-ID abfangen
+        if json_response.get('status') != 1:
+            raise Exception(f"Captcha-Dienst lehnt die Anfrage ab: {json_response.get('request')}")
 
         captcha_id = json_response['request']
         logger.info(f'Captcha-Anfrage gesendet mit ID: {captcha_id}')
 
-        # Auf die Lösung warten
         return self._get_2captcha_result(captcha_id)
 
     def _get_2captcha_result(self, captcha_id):
-        """Wartet auf und holt das Ergebnis von 2Captcha"""
+        """Wartet auf und holt das Ergebnis von 2Captcha.
+
+        Der Auftrag ist bezahlt, sobald in.php die ID geliefert hat. Deshalb wirft nur noch
+        eine ANTWORT DES DIENSTES (JSON mit Fehlercode, z.B. ERROR_CAPTCHA_UNSOLVABLE) die
+        Schleife ab; alles, was der Transport zurueckgibt (leer, HTML, die Sentinel des
+        requestHandlers bei 5xx, Reset oder Timeout eines einzelnen Abrufs), gilt als
+        voruebergehend und es wird bis captcha.timeout weiter gefragt. Bis zum 01.10.2026
+        beendete die erste solche Antwort den Kauf, obwohl der Dienst die Loesung kurz darauf
+        hatte (BurningSeries, ID nachtraeglich status 1); ein 5xx oder Reset oeffnete dabei
+        ueber den requestHandler ein Fenster mitten im Kauf. Gemessen gegen den echten Dienst:
+        Token oft beim ersten Poll, echte Loesungen in 12–14 s bei 2-s-Takt.
+        """
         start_time = time.time()
+        last_answer = ''
 
         while True:
-            request = cRequestHandler(
-                f"https://2captcha.com/res.php?key={self.api_key}&json=1&action=get&id={captcha_id}",
-                caching=False
-            )
-            request.addHeaderEntry('Content-Type', 'application/json')
+            # Bewusst POST statt GET: der requestHandler schreibt jede Adresse ins
+            # Kodi-Log, und in einer Abfrage per GET stuende der API-Schluessel im
+            # Klartext darin. Logs landen im Support haeufig in fremden Haenden.
+            # ignoreErrors: ein gescheiterter Poll bleibt eine Logzeile, kein Fenster und
+            # keine Einblendung — gemeldet wird am Ende vom Aufrufer (Captcha nicht geloest).
+            request = cRequestHandler('https://2captcha.com/res.php', caching=False, method='POST',
+                                      data={'key': self.api_key, 'action': 'get', 'id': captcha_id, 'json': 1},
+                                      ignoreErrors=True)
             response_text = request.request()
+            last_answer = (response_text or '')[:120]
 
+            json_res = None
             try:
                 json_res = json.loads(response_text)
-            except json.JSONDecodeError:
-                logger.error(f"Fehler beim Parsen der 2Captcha-Antwort: {response_text}")
-                raise Exception(f"Ungültige JSON-Antwort: {response_text}")
+            except (json.JSONDecodeError, TypeError):
+                logger.error(f"2Captcha-Antwort kein JSON, frage weiter: {last_answer}")
 
-            if json_res.get('status') == 1:
-                return json_res.get('request')
-            elif json_res.get('request') != 'CAPCHA_NOT_READY':
-                error_msg = f"Fehler beim Lösen des Captchas: {json.dumps(json_res, indent=2)} \nID: {captcha_id}"
-                logger.error(error_msg)
-                raise Exception(error_msg)
+            if json_res is not None:
+                if json_res.get('status') == 1:
+                    return json_res.get('request')
+                elif json_res.get('request') != 'CAPCHA_NOT_READY':
+                    error_msg = f"Fehler beim Lösen des Captchas: {json.dumps(json_res, indent=2)} \nID: {captcha_id}"
+                    logger.error(error_msg)
+                    raise Exception(error_msg)
 
-            # Timeout-Überprüfung
             if time.time() - start_time >= self.timeout:
-                error_msg = f"Timeout beim Warten auf Captcha-Lösung (ID: {captcha_id})"
+                error_msg = f"Timeout beim Warten auf Captcha-Lösung (ID: {captcha_id}, letzte Antwort: {last_answer})"
                 logger.error(error_msg)
                 raise Exception(error_msg)
 
-            # Kurze Pause zwischen den Anfragen
+            # Kurze Pause zwischen den Anfragen (2 s: der Dienst liefert Token oft beim ersten
+            # Poll, ein laengerer Erstabstand wuerde genau diesen Fall verzoegern)
             time.sleep(2)
-
-    def _solve_with_9kw(self, site_key, page_url):
-        """9kw.eu-Implementation für reCAPTCHA v2"""
-        if not self.api_key:
-            xbmcgui.Dialog().ok(cConfig().getLocalizedString(30241), cConfig().getLocalizedString(30291))
-            return None
-
-        # Prüfen, ob Selfsolve aktiviert ist (über Addon-Einstellungen)
-        selfsolve = '1' if cConfig().getSetting('9kw.SelfSolve', 'false') == 'true' else '0'
-
-        post = {
-            'apikey': self.api_key,
-            'action': 'usercaptchaupload',
-            'interactive': '1',
-            'json': '1',
-            'file-upload-01': site_key,
-            'oldsource': 'recaptchav2',
-            'pageurl': page_url,
-            'maxtimeout': str(self.timeout)
-        }
-
-        if selfsolve == '1':
-            post['selfsolve'] = '1'
-
-        token = ''
-
-        try:
-            URL = 'https://www.9kw.eu/index.cgi'
-            request = cRequestHandler(URL, caching=False, method='POST', data=post)
-            response_text = request.request()
-
-            if response_text:
-                data = json.loads(response_text)
-                if 'captchaid' in data:
-                    captcha_id = data['captchaid']
-                    tries = 0
-
-                # Warte auf Captcha-Lösung
-                while tries < self.timeout and self.is_alive:
-                    tries += 1
-                    xbmc.sleep(1000)  # 1 Sekunde warten
-
-                    check_url = f"https://www.9kw.eu/index.cgi?action=usercaptchacorrectdata&id={captcha_id}&apikey={self.api_key}&json=1"
-                    result_request = cRequestHandler(check_url, caching=False)
-                    result_text = result_request.request()
-
-                    if result_text:
-                        try:
-                            result_data = json.loads(result_text)
-                            token = result_data.get('answer', '')
-                            if token:
-                                break
-                        except Exception as e:
-                            logger.error(f"Fehler beim Parsen der 9kw-Antwort: {str(e)}")
-
-        except Exception as e:
-            logger.error(f"9kw Error: {str(e)}")
-
-        return token
