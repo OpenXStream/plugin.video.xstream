@@ -1,16 +1,10 @@
 # -*- coding: utf-8 -*-
 # Python 3
 # Always pay attention to the translations in the menu!
-# HTML LangzeitCache hinzugefügt
-# showGenre:     48 Stunden
-# showEntries:    6 Stunden
-# showSeasons:    6 Stunden
-# showEpisodes:   4 Stunden
-#
 # WAF: vor der Seite haengt seit 09/2026 der Fremd-WAF HostAdmin.online. Er
 # beantwortet jeden Abruf ohne Freigabe mit einer Pruefseite (Status 200,
 # Proof-of-Work). Alle Abrufe laufen deshalb ueber _requestGated(): Pruefseite
-# erkennen, lokal rechnen (captcha/local_solver.py), einreichen, einmal neu
+# erkennen, lokal rechnen (captcha/local/), einreichen, einmal neu
 # holen. Die Freigabe haengt an zwei Cookies UND am User-Agent UND an der IP —
 # daher der feste Sitzungs-UA (_sessionUA) und das Sichern der Cookies von Hand.
 
@@ -30,7 +24,7 @@ from resources.lib.tools import cParser
 from resources.lib.gui.guiElement import cGuiElement
 from resources.lib.config import cConfig
 from resources.lib.gui.gui import cGui
-from resources.lib.captcha.local_solver import is_hostadmin_gate, solve_hostadmin, HOSTADMIN_VERIFY_PATH
+from resources.lib.captcha.local import is_hostadmin_background, is_hostadmin_gate, solve_hostadmin, HOSTADMIN_VERIFY_PATH
 
 
 SITE_IDENTIFIER = 'kinoger'
@@ -47,24 +41,34 @@ ACTIVE = cConfig().getSetting('plugin_' + SITE_IDENTIFIER)
 
 URL_MAIN = 'https://' + DOMAIN
 URL_SERIES = URL_MAIN + '/stream/serie/'
+# Die Suche geht als Formular an die Startadresse, nicht an /index.php?do=search: seit dem 05.11.2026
+# legt die Seite auf jede Adresse mit do=search in der Zeile eine Cloudflare-Pruefung (403 mit
+# cf-mitigated, auf .com und .to gleich), die Kodi nicht loesen kann — mit do, subaction und story nur
+# im Rumpf antwortet dieselbe Seite normal mit der Trefferliste (gemessen 05.11.2026, beide Domains,
+# auch die Folgeseiten ueber search_start)
+URL_SEARCH = URL_MAIN + '/'
 
 # --- Hoster ---------------------------------------------------------------
 # kinoger versteckt seine Hoster hinter eigenen Domains. Der Name des
 # JavaScript-Blocks (pw./fsst./go./ollhd.) sagt NICHTS ueber den Hoster aus —
-# auf derselben Seite lag schon fsst.online in pw.show() und kinoger.pw in
-# fsst.show(). Der Hoster wird daher ausschliesslich an der URL erkannt.
-# Es gibt keine Eigenaufloesung mehr, jede Domain laeuft ueber ResolveURL:
-# kinoger.pw -> Streamix, kinoger.be -> FileLions, kinoger.ru -> VOE,
-# kinoger.embed4me.vip/kinoger.seekplays.pro/kinoger.re -> KinoGer.
+# auf derselben Seite lag schon die fsst-Domain im pw-Block und die pw-Domain
+# im fsst-Block. Der Hoster wird daher ausschliesslich an der URL erkannt.
+# Es gibt keine Eigenaufloesung mehr, jede Domain laeuft ueber ResolveURL
+# (dahinter stehen Streamix, FileLions, VOE, Byse und KinoGer — welche Subdomain
+# welchem Hoster gehoert, entscheidet ResolveURL an der Adresse).
 # Ohne passendes Plugin faellt die Domain ueber isBlockedHoster raus.
 
 # kinoger.be ist domain-locked: ohne passenden Referer liefert der Embed nur
 # "Video embed restricted for this domain", der Resolver findet dann keine Quelle.
+# kinoger.re (Byse) ist ebenso an die Einbettseite gebunden: ohne sie antwortet die
+# Byse-API mit 403 "embedding from kinoger.re is not allowed for this video" (gemessen
+# 19.10.2026, mit einer fremden Einbettseite ebenso).
 # ResolveURL nimmt den Referer ueber die $$-Konvention entgegen (wie in filmpalast.py),
-# der FileLions-Resolver wertet sie aus. Akzeptiert wird jede kinoger-Hauptdomain
+# der FileLions-Resolver wertet sie als Referer aus, der Byse-Resolver als Einbettseite
+# (X-Embed-Origin/-Referer). Akzeptiert wird jede kinoger-Hauptdomain
 # (.to und .com live geprueft), deshalb URL_MAIN statt fester Adresse — so folgt der
 # Referer automatisch der Domain-Einstellung des Plugins.
-HOST_REFERER_REQUIRED = ('kinoger.be',)
+HOST_REFERER_REQUIRED = ('kinoger.be', 'kinoger.re')
 
 
 # --- WAF (HostAdmin.online) ------------------------------------------------
@@ -83,12 +87,12 @@ WAF_UA_PROPERTY = 'xstream.kinoger.sessionUA'
 def _sessionUA():
     """Ein User-Agent fuer die ganze Kodi-Sitzung.
 
-    Der requestHandler wuerfelt je Abruf neu, und jeder Klick ist ein eigener
-    Aufruf des Addons — die Freigabe des WAF gaelte damit nur bis zum naechsten
-    Klick. Deshalb liegt der einmal gewaehlte UA als Window-Property vor (wie
-    lastSearchText). Nach einem Kodi-Neustart oder dem Leeren des Caches wird
-    neu gewaehlt; passt die alte Freigabe dann nicht mehr, kommt die Pruefseite
-    und wird neu geloest.
+    Jeder Klick ist ein eigener Aufruf des Addons, und die Freigabe des WAF haengt
+    am UA — sie darf nicht davon abhaengen, welchen UA der requestHandler beim
+    naechsten Aufruf liefert. Deshalb liegt der einmal gewaehlte UA als
+    Window-Property vor (wie lastSearchText). Nach einem Kodi-Neustart oder dem
+    Leeren des Caches wird neu gewaehlt; passt die alte Freigabe dann nicht mehr,
+    kommt die Pruefseite und wird neu geloest.
     """
     win = xbmcgui.Window(10000)
     sUA = win.getProperty(WAF_UA_PROPERTY)
@@ -111,12 +115,14 @@ class _HeaderResponse:
 def _saveResponseCookies(oRequest, sUrl):
     """Set-Cookie-Zeilen der letzten Antwort von Hand in die Cookie-Datei schreiben.
 
-    Noetig, weil der requestHandler je Domain EINEN Opener wiederverwendet und
-    dessen Cookie-Speicher der des ERSTEN Abrufs bleibt: Cookies spaeterer
-    Antworten landen nur dort im Arbeitsspeicher, nicht in der Datei — und der
-    naechste Abruf liest seine Cookies aus der Datei. Gemessen 19.09.2026: das
-    hash-Cookie der Einreichung kam beim Folgeabruf nie an, die Pruefseite kam
-    wieder. Das Parsen macht die Standardbibliothek (Max-Age, Domain, Secure).
+    Entstanden am 19.09.2026, als der requestHandler je Domain EINEN Opener
+    wiederverwendete und dessen Cookie-Speicher der des ERSTEN Abrufs blieb:
+    das hash-Cookie der Einreichung kam beim Folgeabruf nie an, die Pruefseite
+    kam wieder. Seit dem 02.11.2026 legt der requestHandler die Cookies jeder
+    Antwort selbst in die Dose der Domain und speichert sie (_cookieJar) — der
+    Weg hier ist damit doppelt, aber unschaedlich (dieselben Cookies, dieselbe
+    Dose); er bleibt, bis die WAF-Freigabe ohne ihn live belegt ist (am
+    02.11.2026 noch nicht). Das Parsen macht die Standardbibliothek (Max-Age, Domain, Secure).
     """
     oHeaders = oRequest.getResponseHeader()
     if not hasattr(oHeaders, 'get_all'):
@@ -157,7 +163,7 @@ def _passWaf(sGateHtml):
     return True
 
 
-def _requestGated(oRequest, bSolve=True):
+def _requestGated(oRequest):
     """request() mit WAF-Behandlung. EIN Anlauf je Aufruf, keine Schleife.
 
     Ablauf bei einer Pruefseite: Cache-Eintrag verwerfen (sie kommt mit Status
@@ -165,16 +171,18 @@ def _requestGated(oRequest, bSolve=True):
     drei Netzabrufe, mehr nicht: die Gegenseite kippt unter Last in
     Zeitueberschreitungen. Scheitert etwas, kommt '' zurueck und der Aufrufer
     zeigt seine normale Leer-Meldung; der naechste Klick ist der naechste Versuch.
-    bSolve=False fuer parallele Abrufe (Such-Folgeseiten): dort wird nicht
-    geloest, eine Pruefseite zaehlt als nicht erreicht.
+    Eine Inhaltsseite, auf der der WAF nur im Hintergrund mitlaeuft
+    (is_hostadmin_background), ist keine Pruefseite und gilt als Inhalt.
     """
     oRequest.addHeaderEntry('User-Agent', _sessionUA())
     sHtmlContent = oRequest.request()
     if not sHtmlContent or sHtmlContent in REQUEST_ERRORS or not is_hostadmin_gate(sHtmlContent):
+        if is_hostadmin_background(sHtmlContent):
+            # Inhalt mit Hintergrund-Pruefung: die frischt im Browser nur die
+            # Freigabe auf, der Inhalt gilt. Geloest wird erst an der Pruefseite.
+            logger.info('%s: WAF prueft nur im Hintergrund, Inhalt uebernommen' % SITE_NAME)
         return sHtmlContent
     oRequest.dropCacheEntry()
-    if not bSolve:
-        return ''
     logger.info('%s: WAF-Pruefseite erkannt, loese lokal' % SITE_NAME)
     _saveResponseCookies(oRequest, URL_MAIN + '/')
     if not _passWaf(sHtmlContent):
@@ -206,8 +214,6 @@ def load():
 def showGenre():
     params = ParameterHandler()
     oRequest = cRequestHandler(URL_MAIN)
-    if cConfig().getSetting('global_search_' + SITE_IDENTIFIER) == 'true':
-        oRequest.cacheTime = 60 * 60 * 48  # 48 Stunden
     sHtmlContent = _requestGated(oRequest)
     # Markup: <li class="links"><a href="/main/action/"><img ... /> Action</a></li>
     # Der erste Eintrag ("Alle Filme") nutzt zusaetzlich <b>...</b> — daher beide Formen.
@@ -233,128 +239,82 @@ def showGenre():
     cGui().setEndOfDirectory()
 
 
-def _fetchSearchPage(entryUrl, sSearchText, iPage, pattern, bFrisch=False):
-    """Eine Folgeseite der Suche holen -> (Rohtreffer, bErreicht)."""
-    # bFrisch=True zwingt am HTML-Cache vorbei: Nachhol- und Bestaetigungs-
-    # abrufe muessen den SERVER fragen — der Cache liefert sonst exakt die
-    # Antwort zurueck, die gerade geheilt oder bestaetigt werden soll
-    # (Drosselseiten mit Status 200 werden wie normale Antworten gecacht).
-    oRequest = cRequestHandler(entryUrl, ignoreErrors=True, caching=not bFrisch)
+def _searchRequest(sSearchText, iPage=1, bIgnoreErrors=False):
+    """Abruf einer Suchseite. Die Suche ist ein Formular (do=search, als Rumpf
+    geschickt), die Folgeseiten blaettern ueber `search_start` und `result_from`
+    — genau das setzt das list_submit-JS der Seite (Mitschnitt 21.10.2026:
+    `frm.result_from.value=(prm-1) * 12 + 1; frm.search_start.value=prm;
+    frm.submit()`).
+
+    Der Weiter-Eintrag traegt nur Begriff und Seitenzahl, der Abruf entsteht
+    hier aus dem rohen Begriff (Regel: roh im Parameter,
+    kodiert nur am Abruf; bis zum 02.11.2026 loeste der Parameterweg eine fertige
+    Adresse ohnehin wieder auf, unquote_plus).
+    """
+    oRequest = cRequestHandler(URL_SEARCH, ignoreErrors=bIgnoreErrors)
     oRequest.addParameters('do', 'search')
     oRequest.addParameters('subaction', 'search')
     oRequest.addParameters('story', sSearchText)
     oRequest.addParameters('titleonly', '3')
     oRequest.addParameters('submit', 'submit')
-    # Die Blaetterung der Seite steckt in ihrem eigenen list_submit-JS:
-    # search_start ist die Seitennummer, result_from der Versatz in 20er-Schritten.
-    oRequest.addParameters('search_start', str(iPage))
-    oRequest.addParameters('result_from', str((iPage - 1) * 20 + 1))
-    # bSolve=False: laeuft parallel — geloest wird nur im Hauptabruf (Seite 1).
-    sHtmlContent = _requestGated(oRequest, bSolve=False)
-    # Ein gescheiterter Abruf (Timeout, Sperre, 404) liefert einen Klartext aus
-    # REQUEST_ERRORS. Ohne diese Unterscheidung saehe er wie die letzte Seite
-    # aus und wuerde die Sammlung vorzeitig beenden.
-    if not sHtmlContent or sHtmlContent in REQUEST_ERRORS:
-        return [], False
-    isMatch, aResult = cParser.parse(sHtmlContent, pattern)
-    return (aResult if isMatch else []), True
+    if iPage > 1:
+        oRequest.addParameters('search_start', str(iPage))
+        oRequest.addParameters('result_from', str((iPage - 1) * 12 + 1))
+    return oRequest
 
 
-# Pause vor jedem Nachholversuch: gibt einem Rate-Limit (429) Luft. Kuerzer
-# heilt seltener, laenger kostet nur im Fehlerfall — im Normalfall laeuft
-# keine einzige Pause.
-RETRY_PAUSE = 0.6
+def _searchPages(sHtmlContent, iPage):
+    """Seitenlage der Suche aus der Blaetterleiste: (hat Folgeseite, letzte Seite).
 
-
-def _fetchMoreSearchPages(entryUrl, sSearchText, pattern, iMaxPages=10, iBatch=4):
-    """Folgeseiten der Suche einsammeln.
-
-    Ohne das endete die Suche nach Seite 1: gemessen "star wars" 12 statt 31,
-    "koenig" 12 statt ueber 48. Abbruch ist eine Seite ohne Treffer — bei
-    "walking dead" ist schon Seite 2 leer, dort entstehen also keine
-    ueberzaehligen Abrufe. Geholt wird in Gruppen parallel, weil die Seiten
-    sonst nacheinander auf der Leitung liegen.
-    Fehlertoleranz in zwei Stufen (Anlass: unter der Parallellast fielen je
-    Lauf zufaellig ganze Seiten aus und die Trefferzahl wuerfelte — still,
-    ohne jede Meldung; gemessen 31.08. an streamcloud):
-    - Ein GESCHEITERTER Abruf (Timeout, Sperre, 404) wird nach den Gruppen
-      einmal sequenziell mit kurzer Pause nachgeholt statt still verworfen.
-    - Eine ERREICHTE Seite ohne Treffer gilt erst als Listenende, wenn ein
-      zweiter Abruf das bestaetigt — ein 200er mit leerem Body saehe sonst
-      exakt wie das Ende aus. Kostet am echten Ende einen Zusatzabruf.
-    Die Treffer werden je Seite gesammelt und in Seitenreihenfolge
-    zurueckgegeben, damit Nachgeholtes an der richtigen Stelle landet.
+    Die Suchseite blaettert nicht ueber Links, sondern ueber `list_submit(N)` im
+    onclick — die Leiste fuehrt jede andere Seite so, die aktive als <span>, und
+    auf der letzten Seite steht keine hoehere Zahl mehr. Die hoechste Zahl ist
+    die letzte Seite (die Leiste zeigt sie auch hinter der Auslassung: "love"
+    2..10 und 16), eine hoehere Zahl als die aktive belegt die Folgeseite. Ohne
+    Leiste gibt es nur diese eine Seite (gemessen 21.10.2026 ueber 11 Begriffe).
     """
-    dPages = {}
-    aRetry = []
-    iEnde = None
-    iPage = 2
-    while iPage <= iMaxPages:
-        aBatch = list(range(iPage, min(iPage + iBatch, iMaxPages + 1)))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(aBatch)) as oPool:
-            aPages = list(oPool.map(lambda p: _fetchSearchPage(entryUrl, sSearchText, p, pattern), aBatch))
-        for iNum, (aRows, bErreicht) in zip(aBatch, aPages):
-            if not bErreicht:
-                aRetry.append(iNum)
-            elif aRows:
-                dPages[iNum] = aRows
-            else:
-                # Ende-Kandidat: einmal bestaetigen, bevor abgebrochen wird.
-                time.sleep(RETRY_PAUSE)
-                aRows2, bErreicht2 = _fetchSearchPage(entryUrl, sSearchText, iNum, pattern, bFrisch=True)
-                if bErreicht2 and not aRows2:
-                    iEnde = iNum
-                    break
-                if aRows2:
-                    # Hickser: beim zweiten Abruf war die Seite doch gefuellt.
-                    logger.info('searchRetry %s: Seite %d nachgeholt, %d Treffer' % (SITE_NAME, iNum, len(aRows2)))
-                    dPages[iNum] = aRows2
-                else:
-                    # Erst leer-erreicht, dann gescheitert: unklar, Seite fehlt.
-                    logger.info('searchRetry %s: Seite %d nicht bestaetigt, Treffer dieser Seite fehlen' % (SITE_NAME, iNum))
-        if iEnde is not None:
-            break
-        iPage += iBatch
-    # Nachholrunde: gescheiterte Seiten einmal sequenziell holen. Seiten hinter
-    # einem bestaetigten Ende liegen jenseits der Ergebnisse und bleiben weg.
-    if iEnde is not None:
-        aRetry = [p for p in aRetry if p < iEnde]
-    for iNum in aRetry:
-        time.sleep(RETRY_PAUSE)
-        aRows, bErreicht = _fetchSearchPage(entryUrl, sSearchText, iNum, pattern, bFrisch=True)
-        if aRows:
-            logger.info('searchRetry %s: Seite %d nachgeholt, %d Treffer' % (SITE_NAME, iNum, len(aRows)))
-            dPages[iNum] = aRows
-        else:
-            logger.info('searchRetry %s: Seite %d weiterhin nicht erreichbar, Treffer dieser Seite fehlen' % (SITE_NAME, iNum))
-    aAll = []
-    for iNum in sorted(dPages):
-        aAll.extend(dPages[iNum])
-    return aAll
+    aPages = set(int(x) for x in re.findall(r'list_submit\((\d+)\)', sHtmlContent))
+    iLast = max(aPages | {iPage})
+    return iLast > iPage, iLast
+
 
 def showEntries(entryUrl=False, sGui=False, sSearchText=False):
     oGui = sGui if sGui else cGui()
     params = ParameterHandler()
-    if not entryUrl:
-        entryUrl = params.getValue('sUrl')
-    oRequest = cRequestHandler(entryUrl, ignoreErrors=(sGui is not False))
-    if cConfig().getSetting('global_search_' + SITE_IDENTIFIER) == 'true':
-        oRequest.cacheTime = 60 * 60 * 6  # 6 Stunden
+    if not sSearchText:
+        # Weiter-Seite der Suche: Kodi ruft die Funktion neu auf, Begriff und
+        # Seitenzahl stehen dann nur noch im Parameter. Ohne den Begriff liefe die
+        # Folgeseite ungefiltert und zeigte die Beschreibungstreffer der Seite.
+        sSearchText = params.getValue('sSearchText') or False
+    iPage = 1
+    bNext, iLast = False, 1
     if sSearchText:
-        oRequest.addParameters('do', 'search')
-        oRequest.addParameters('subaction', 'search')
-        oRequest.addParameters('story', sSearchText)
-        oRequest.addParameters('titleonly', '3')
-        oRequest.addParameters('submit', 'submit')
-    sHtmlContent = _requestGated(oRequest)
+        iPage = int(params.getValue('page') or 1)
+        entryUrl = URL_SEARCH   # die Serienerkennung unten prueft die Adresse auf /serie/
+    elif not entryUrl:
+        entryUrl = params.getValue('sUrl')
     pattern = 'class="title".*?href="([^"]+)">([^<]+).*?src="([^"]+)(.*?)</a> </span>'
-    isMatch, aResult = cParser.parse(sHtmlContent, pattern)
-    if isMatch and sSearchText:
-        # In der globalen Suche laufen alle Sites gleichzeitig, deshalb dort nur
-        # fuenf Seiten je Site. Mit zehn dauerte eine breite Suche ueber Mobilfunk
-        # 19 s ("koenig", 412 Treffer) — der Einzelaufruf der Site bleibt bei zehn,
-        # dort laeuft nur eine Seite zur Zeit.
-        aResult += _fetchMoreSearchPages(entryUrl, sSearchText, pattern, iMaxPages=5 if sGui else 10)
+    while True:
+        if sSearchText:
+            # Eine Folgeseite der Suche meldet Fehler nicht als Fenster: dort gilt wie
+            # beim Blaettern „Kein Eintrag gefunden" (Seite 1 meldet wie bisher).
+            oRequest = _searchRequest(sSearchText, iPage, sGui is not False or iPage > 1)
+        else:
+            oRequest = cRequestHandler(entryUrl, ignoreErrors=(sGui is not False))
+        sHtmlContent = _requestGated(oRequest)
+        isMatch, aResult = cParser.parse(sHtmlContent, pattern)
+        if not sSearchText or not isMatch:
+            break
+        # Titelfilter wie an allen Filterstellen (cParser.searchTitle, normalisiert)
+        aResult = [row for row in aResult if cParser.searchTitle(sSearchText, row[1])]
+        bNext, iLast = _searchPages(sHtmlContent, iPage)
+        if aResult or sGui or not bNext:
+            break
+        # Seite nach dem Titelfilter leer, aber die Leiste fuehrt eine Folgeseite:
+        # gleich weiterblaettern statt dem Nutzer leere Seiten zu zeigen (gefunden
+        # 21.10.2026 an hdfilme „der pate"). Nur in der Einzelsuche — die globale
+        # Suche bleibt bei Seite 1.
+        iPage += 1
     if not isMatch:
         if not sGui:
             oGui.showInfo()
@@ -364,8 +324,6 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False):
     iShown = 0
     isTvshow = False
     for sUrl, sName, sThumbnail, sDummy in aResult:
-        if sSearchText and not cParser.searchTitle(sSearchText, sName):
-            continue
         # Serie erkennen: Staffel im Titel, Serien-Kategorie oder der Staffel-Marker
         # (<div style="text-align:right;">S01-03E...) im Eintrag.
         # Serien-Marker der Site steht rechts oben im Eintrag ("S01-03E01-06"). Die Site
@@ -399,14 +357,21 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False):
         params.setParam('searchTitle', sName)
         oGui.addFolder(oGuiElement, params, isTvshow, total)
         iShown += 1
-    # Kamen Treffer an, wurden aber ALLE vom Titelfilter verworfen, stand hier
-    # ein leeres Verzeichnis ohne Hinweis (belegt mit "koenig", Audit 01.09.2026).
-    # BEWUSST VOR dem Pagination-Block: dessen Bedingung schliesst die Suche aus,
-    # die Meldung wuerde dort nie erreicht. Gleiches Muster wie in hdfilme.
-    if not sGui and not iShown:
-        oGui.showInfo()
-
-    if not sGui and not sSearchText:
+    if sGui:
+        return
+    if sSearchText:
+        # Suche: eine Seite je Aufruf, die Folgeseite ueber den Weiter-Eintrag mit
+        # Begriff und Seitenzahl (Bauform wie bei den anderen Seiten). Leere Seiten
+        # wurden oben uebersprungen; ohne Treffer und ohne Folgeseite kommt die
+        # Meldung „Kein Eintrag gefunden" (belegt mit "koenig", 01.09.2026).
+        if not iShown:
+            oGui.showInfo()
+        if bNext:
+            nextParams = ParameterHandler()
+            nextParams.setParam('sSearchText', sSearchText)
+            nextParams.setParam('page', iPage + 1)
+            oGui.addNextPage(SITE_IDENTIFIER, 'showEntries', nextParams, cGui.pageInfo(iPage, iLast))
+    else:
         # Seitenlage fuer den Weiter-Eintrag: die hoechste Zahl der Blaetterleiste ist
         # das Listenende — bei langen Listen steht sie hinter der "…"-Auslassung, bei
         # kurzen sind ohnehin alle Zahlen da (gemessen 04.09.2026 gegen die bisektierten
@@ -422,9 +387,8 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False):
         if isMatchNextPage:
             params.setParam('sUrl', sNextUrl)
             oGui.addNextPage(SITE_IDENTIFIER, 'showEntries', params, sPageInfo)
-    if not sGui:
-        oGui.setView('tvshows' if isTvshow else 'movies')
-        oGui.setEndOfDirectory()
+    oGui.setView('tvshows' if isTvshow else 'movies')
+    oGui.setEndOfDirectory()
 
 
 def _parseProviderMatrix(sHtmlContent):
@@ -461,8 +425,6 @@ def showSeasons():
     sThumbnail = params.getValue('sThumbnail') if params.exist('sThumbnail') else ''
     sName = params.getValue('searchTitle')
     oRequest = cRequestHandler(sUrl)
-    if cConfig().getSetting('global_search_' + SITE_IDENTIFIER) == 'true':
-        oRequest.cacheTime = 60 * 60 * 6  # 6 Stunden
     sHtmlContent = _requestGated(oRequest)
     matrix = _parseProviderMatrix(sHtmlContent)
     if not matrix:
@@ -500,8 +462,6 @@ def showEpisodes(staffel=None, htmlContent=None):
         sHtmlContent = htmlContent
     else:
         oRequest = cRequestHandler(sUrl)
-        if cConfig().getSetting('global_search_' + SITE_IDENTIFIER) == 'true':
-            oRequest.cacheTime = 60 * 60 * 4  # 4 Stunden
         sHtmlContent = _requestGated(oRequest)
     matrix = _parseProviderMatrix(sHtmlContent)
     if not matrix:
@@ -518,7 +478,8 @@ def showEpisodes(staffel=None, htmlContent=None):
         aUrls = _episodeUrls(matrix, iSeasonIdx, iEpisode - 1)
         if not aUrls:
             continue
-        sTitle = '%s - S%sE%s' % (sName, str(sStaffel).zfill(2), str(iEpisode).zfill(2))
+        # Eine Form auf allen Sites ("S01E05", cParser.episodeLabel) — ohne Seriennamen, der steht als TVShowTitle am Eintrag
+        sTitle = cParser.episodeLabel(sStaffel, iEpisode)
         oGuiElement = cGuiElement(sTitle, SITE_IDENTIFIER, 'showHosters')
         oGuiElement.setMediaType('episode')
         oGuiElement.setTVShowTitle(sName)
@@ -537,15 +498,16 @@ def _buildHosters(aUrls):
 
     Alle Domains gehen denselben Weg: hat ResolveURL einen Resolver, wird durchgereicht,
     sonst faellt der Eintrag ueber isBlockedHoster raus, damit nichts in der Liste steht,
-    was nicht abspielt. kinoger.pw, kinoger.re, kinoger.be, kinoger.ru, firestream.to,
-    voe.sx, veev.* und dsvplay.com sind damit abgedeckt, ohne sie hier einzeln zu pflegen.
-    Eine Ausnahme betrifft kinoger.be: der Referer (HOST_REFERER_REQUIRED), oben begruendet.
+    was nicht abspielt. Die Subdomains der Seite und die externen Hoster (Firestream,
+    VOE, Veev, DSVPlay) sind damit abgedeckt, ohne sie hier einzeln zu pflegen.
+    Eine Ausnahme betrifft kinoger.be und kinoger.re: der Referer (HOST_REFERER_REQUIRED),
+    oben begruendet.
 
     WICHTIG: fuer den Blocked-Check den VOLLEN Hostnamen nehmen, nicht wie sonst
     ueblich nur den ersten Namensteil. kinoger versteckt seine Hoster hinter
-    eigenen Subdomains (kinoger.pw, kinoger.embed4me.vip, kinoger.seekplays.pro,
-    kinoger.ru) — mit 'Kinoger' als Suchbegriff wuerden die alle faelschlich auf den
-    kinoger.re-Resolver passen und als spielbar gelistet, obwohl sie es nicht sind.
+    eigenen Subdomains — mit 'Kinoger' als Suchbegriff wuerden die alle faelschlich
+    auf den KinoGer-Resolver passen und als spielbar gelistet, obwohl sie es nicht
+    sind.
     """
     hosters = []
     for sUrl in aUrls:
@@ -597,9 +559,10 @@ def showSearch():
         if not sSearchText:
             return
         win.setProperty('xstream.kinoger.lastSearchText', sSearchText)
+    # Das Verzeichnis schliesst showEntries selbst ab — so wie bei jeder
+    # Weiter-Seite der Suche, die Kodi direkt dort aufruft.
     _search(False, sSearchText)
-    cGui().setEndOfDirectory()
 
 
 def _search(oGui, sSearchText):
-    showEntries(URL_MAIN + '/index.php?do=search', oGui, sSearchText)
+    showEntries(False, oGui, sSearchText)

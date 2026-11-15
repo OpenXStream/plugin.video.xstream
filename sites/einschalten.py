@@ -60,8 +60,8 @@ def load():
     params.setParam('sUrl', URL_NEW_MOVIES)
     cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30501), SITE_IDENTIFIER, 'showEntries'), params)  # Aktuelle Releases
     params.setParam('sUrl', URL_LAST_MOVIES)
-    cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30500), SITE_IDENTIFIER, 'showEntriesLast'), params)  # Neues
-    # Seit 2026.09.10 (Kategorien-Durchgang): die zwei Bereiche der Seiten-Navigation,
+    cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30500), SITE_IDENTIFIER, 'showEntriesLast'), params)  # Neu auf der Seite
+    # Seit dem 10.09.2026 (Kategorien-Durchgang): die zwei Bereiche der Seiten-Navigation,
     # die noch fehlten — „Alle Filme“ und „Genres“; beide nutzen das Karten-Markup
     # der uebrigen Listen, showEntries liest sie unveraendert
     params.setParam('sUrl', URL_ALL_MOVIES)
@@ -112,7 +112,7 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False):
     # ng-state steht vor den Filmen oft das Kollektionsobjekt mit seinem Genre-Array
     # ({"id":27,"name":"Horror"}), und ein offenes .*? lief von dessen id bis zum
     # Titel des ersten Films - der bekam dann die Genre-ID und endete in einem
-    # 404 auf /api/movies/27/watch (20 von 31 Kollektionen, Audit 01.09.2026).
+    # 404 auf /api/movies/27/watch (20 von 31 Kollektionen, 01.09.2026).
     pattern = '{"id":([^,"]+)[^{}]*?"title":"([^"]+)[^{}]*?Date":"([^-]+)[^{}]*?"posterPath":"([^"]+)[^{}]*?collectionId":([^}]+)'
     isMatch, aResult = cParser.parse(sHtmlContent, pattern)
     if not isMatch:

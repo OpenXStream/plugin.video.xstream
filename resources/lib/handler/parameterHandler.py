@@ -3,7 +3,7 @@
 
 import sys
 
-from urllib.parse import parse_qsl, urlsplit, unquote_plus, urlencode
+from urllib.parse import parse_qsl, urlsplit, urlencode
 
 
 class ParameterHandler:
@@ -28,15 +28,8 @@ class ParameterHandler:
     def setParam(self, paramName, paramValue):
         # set the value of the parameter with the name "paramName" to "paramValue"
         # if there is no such parameter, the parameter is created
-        # if no value is given "paramValue" is set "None"
         paramValue = str(paramValue)
         self.__params.update({paramName: paramValue})
-
-    def addParams(self, paramDict):
-        # adds a whole dictionary {key1:value1,...,keyN:valueN} of parameters to the ParameterHandler
-        # existing parameters are updated
-        for key, value in paramDict.items():
-            self.__params.update({key: str(value)})
 
     def to_dict(self):
         """Serialize parameters to a plain dict for caching."""
@@ -50,6 +43,11 @@ class ParameterHandler:
         return obj
 
     def getParameterAsUri(self):
+        # Die Werte gehen unveraendert in die Adresse (urlencode) und kommen beim naechsten Aufruf ueber parse_qsl genauso
+        # wieder heraus. Bis zum 02.11.2026 lief jeder Wert vorher durch unquote_plus — '+' wurde Leerzeichen, '%XX' wurde
+        # aufgeloest: netzkino verlor die Kodierung seines Stream-Pfads (Leerzeichen in der Adresse), filmo das Plus im Titel
+        # „Du+Ich", internetarchive bekam Vorschaubilder mit '/' statt '%2F' (Messung ueber alle 16 Sites, 02.11.2026).
+        # Sites, die Adressen erst vor dem Abruf kodieren (movie2k, kellerkino, animetoast), bleiben richtig.
         outParams = dict()
         if 'params' in self.__params:
             del self.__params['params']
@@ -64,6 +62,6 @@ class ParameterHandler:
             for param in self.__params:
                 if len(self.__params[param]) < 1:
                     continue
-                outParams[param] = unquote_plus(self.__params[param])
+                outParams[param] = self.__params[param]
             return urlencode(outParams)
         return 'params=0'

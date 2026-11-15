@@ -7,15 +7,59 @@ import time
 import xbmcgui
 
 from resources.lib.config import cConfig
-from resources.lib.tmdb.api import cTMDB
+from resources.lib.tmdb.api import cTMDB, IMAGE_URL, POSTER_SIZE
 from resources.lib.logger import logger
 from datetime import date, datetime
 from urllib.parse import urlencode
 
+# Info-Fenster bleiben bis zum Skriptende erhalten (siehe Ende von WindowsBoxes).
+_dialogs = []
 
-def WindowsBoxes(sTitle, sFileName, metaType, year=''):
+
+def _regionDate(sDate):
+    """TMDB-Datum (JJJJ-MM-TT) in der Datumsform der Kodi-Region — Kodi liefert sie als strftime-Format,
+    z.B. %d.%m.%Y (Premiere, Geburts- und Sterbedatum). Ein Format, das dieses Python nicht kennt, oder
+    ein Datum in anderer Form kommt unveraendert zurueck."""
+    if not sDate:
+        return ''
     try:
-        meta = cTMDB().get_meta(metaType, sFileName, tmdb_id=xbmc.getInfoLabel('ListItem.Property(TmdbId)'), year=year, advanced='true')
+        oDate = datetime(*(time.strptime(sDate, '%Y-%m-%d')[0:6]))
+        return oDate.strftime(xbmc.getRegion('dateshort') or '%Y-%m-%d')
+    except ValueError:
+        return sDate
+
+
+def _zahl(oWert, iStellen=0):
+    """Zahl in der Schreibweise der Oberflaechensprache (seit dem 03.11.2026): Deutsch mit Punkt als Tausender- und
+    Komma als Dezimalzeichen (160.000.000 · 8,4), jede andere Sprache mit Komma und Punkt (160,000,000 · 8.4). Kodi
+    nennt keine Zahlenform der Region (getRegion kennt Datum, Uhrzeit, Temperatur, Tempo), deshalb die Sprache.
+    Was keine Zahl ist, kommt unveraendert zurueck."""
+    try:
+        sText = '{:,.{p}f}'.format(float(oWert), p=iStellen)
+    except (TypeError, ValueError):
+        return oWert
+    if xbmc.getLanguage(xbmc.ISO_639_1) == 'de':
+        sText = sText.replace(',', '\x00').replace('.', ',').replace('\x00', '.')
+    return sText
+
+
+def _geld(oWert):
+    """Dollar-Betrag von TMDB (Budget, Einnahmen): „160.000.000 $" auf Deutsch, „$160,000,000" sonst; ohne Wert leer
+    (info.xml blendet die Zeile dann aus)."""
+    if not oWert:
+        return ''
+    sText = _zahl(oWert)
+    return sText + ' $' if xbmc.getLanguage(xbmc.ISO_639_1) == 'de' else '$' + sText
+
+
+def WindowsBoxes(sTitle, sFileName, metaType, year='', tmdb_id=''):
+    meta = {}  # scheitert get_meta, bleibt es leer -> Hinweis unten statt UnboundLocalError (bis 01.11.2026)
+    try:
+        # Mit ID (Kontextmenue eines Eintrags, der sie kennt) holt get_meta direkt die Details, sonst
+        # Namenssuche plus Details. Bis zum 25.10.2026 stand hier ListItem.Property(TmdbId) — die
+        # setzt niemand (Kodi speichert Property-Namen kleingeschrieben, unsere heisst tmdb_id),
+        # das Fenster suchte deshalb immer per Name.
+        meta = cTMDB().get_meta(metaType, sFileName, tmdb_id=tmdb_id, year=year, advanced='true')
         try:
             meta['plot'] = str(meta['plot'].encode('latin-1'), 'utf-8')
         except Exception:
@@ -25,21 +69,18 @@ def WindowsBoxes(sTitle, sFileName, metaType, year=''):
         pass
 
     if 'tmdb_id' not in meta:
-        xbmc.executebuiltin("Notification(TMDB, Kein Eintrag gefunden, 1000, '')")
+        xbmc.executebuiltin("Notification(TMDB, %s, 1000, '')" % cConfig().getLocalizedString(30253))
         return
-    if 'premiered' in meta and meta['premiered']:
-        releaseDate = datetime(*(time.strptime(meta['premiered'], '%Y-%m-%d')[0:6]))
-        meta['releaseDate'] = releaseDate.strftime('%d/%m/%Y')
-    else:
-        meta['releaseDate'] = '-'
+    # Leere Werte bleiben leer: info.xml blendet Zeilen ohne Wert aus und haengt in der Kopfzeile
+    # nur an, was da ist (vorher "-" bzw. "0h0" bei einer Serie ohne Laufzeit).
+    meta['releaseDate'] = _regionDate(meta.get('premiered'))   # vorher fest Tag/Monat/Jahr mit Schraegstrich
+    meta['durationH'] = ''
+    meta['durationM'] = ''
     if 'duration' in meta and meta['duration']:
         duration = meta['duration']
         durationH = duration // 60
         meta['durationH'] = durationH
         meta['durationM'] = '{:02d}'.format(int(duration - 60 * durationH))
-    else:
-        meta['durationH'] = 0
-        meta['durationM'] = 0
 
     class XMLDialog(xbmcgui.WindowXMLDialog):
         def __init__(self, *args, **kwargs):
@@ -47,8 +88,11 @@ def WindowsBoxes(sTitle, sFileName, metaType, year=''):
             pass
 
         def onInit(self):
-            self.setProperty('color', cConfig().getSetting('Color'))
-            self.poster = 'https://image.tmdb.org/t/p/%s' % cConfig().getSetting('poster_tmdb')
+            # Fest Hellblau: die Einstellung "Farbe" ist seit dem 25.10.2026 ausgebaut (so entschieden), sie
+            # wirkte nur hier — info.xml faerbt damit Fokusrahmen und Kaesten (Window.Property(color)).
+            # Kodi kennt den Namen aus system/colors.xml; ohne Wert bliebe der Rahmen durchsichtig.
+            self.setProperty('color', 'lightblue')
+            self.poster = IMAGE_URL + POSTER_SIZE
             self.none_poster = 'https://eu.ui-avatars.com/api/?background=000&size=512&name=%s&color=FFF&font-size=0.33'
             self.setFocusId(9000)
             if 'credits' in meta and meta['credits']:
@@ -94,10 +138,12 @@ def WindowsBoxes(sTitle, sFileName, metaType, year=''):
                     self.getControl(5200).addItems(listitems2)
 
             meta['title'] = sTitle
-            if 'rating' not in meta or meta['rating'] == 0:
-                meta['rating'] = '-'
-            if 'votes' not in meta or meta['votes'] == '0':
-                meta['votes'] = '-'
+            # Wertung (eine Nachkommastelle), Stimmen, Budget und Einnahmen in der Zahlenform der Oberflaechensprache —
+            # bis zum 03.11.2026 standen sie roh da (8.373, 40628, „160,000,000 $" auch auf Deutsch)
+            meta['rating'] = _zahl(meta['rating'], 1) if meta.get('rating') else '-'
+            meta['votes'] = _zahl(meta['votes']) if meta.get('votes') else '-'
+            meta['budget'] = _geld(meta.get('budget'))
+            meta['revenue'] = _geld(meta.get('revenue'))
 
             for prop in meta:
                 try:
@@ -110,23 +156,9 @@ def WindowsBoxes(sTitle, sFileName, metaType, year=''):
                         self.setProperty(prop, meta[prop])
                     else:
                         self.setProperty(prop, str(meta[prop]))
-
-            import threading
-            _tmdb_id = str(meta.get('tmdb_id', ''))
-            _imdb_id = str(meta.get('imdb_id', ''))
-            _dialog = self
-            _meta = meta
-            def _bgTrailerCheck():
-                try:
-                    from resources.lib.trailer import hasTrailer
-                    if _tmdb_id and hasTrailer(_tmdb_id, _imdb_id, metaType):
-                        _dialog.setProperty('isTrailer', 'true')
-                except Exception:
-                    if 'trailer' in _meta:
-                        _dialog.setProperty('isTrailer', 'true')
-            t = threading.Thread(target=_bgTrailerCheck)
-            t.daemon = True
-            t.start()
+            # Keine Trailer-Pruefung beim Oeffnen: bis zum 01.11.2026 lief hier hasTrailer im Hintergrund
+            # (KinoCheck, TMDB, IMDb) und setzte isTrailer, das info.xml nie las — der Trailer-Knopf haengt
+            # nur an !Player.HasMedia, ob es einen Trailer gibt, zeigt erst der Klick (wie im Kontextmenue)
 
         def credit(self, meta='', control=''):
             listitems = []
@@ -154,19 +186,17 @@ def WindowsBoxes(sTitle, sFileName, metaType, year=''):
                 try:
                     from resources.lib.trailer import playTrailer
                     from resources.lib.config import cConfig
-                    _tmdb_lang = cConfig().getSetting('tmdb_lang') or 'de'
                     playTrailer(
                         tmdb_id=_tmdb_id,
                         mediatype=metaType,
                         title=sTitle,
                         year=year,
                         poster=_poster,
-                        pref_lang=_tmdb_lang,
                     )
                 except Exception:
                     import traceback
                     logger.error('trailer onClick error: %s' % traceback.format_exc())
-                    xbmc.executebuiltin("Notification(Trailer, Trailer-Suche fehlgeschlagen, 3000, '')")
+                    xbmc.executebuiltin("Notification(%s, %s, 3000, '')" % (cConfig().getLocalizedString(30027), cConfig().getLocalizedString(30900)))
                 return
             elif controlId == 30:
                 self.close()
@@ -176,8 +206,24 @@ def WindowsBoxes(sTitle, sFileName, metaType, year=''):
                 sid = item.getProperty('id')
                 sUrl = 'person/' + str(sid)
                 try:
-                    meta = cTMDB().getUrl(sUrl, '', "append_to_response=movie_credits,tv_credits")
-                    meta_credits = meta['movie_credits']['cast']
+                    # page=1 statt '': getUrl haengt den Wert immer an, und TMDB weist einen leeren page-Parameter
+                    # mit 400 ab ("Pages start at 1") — die Person oeffnete deshalb meist nicht (30.10.2026,
+                    # 2 von 3 Personen 400, mit page=1 alle 200).
+                    meta = cTMDB().getUrl(sUrl, 1, "append_to_response=movie_credits,tv_credits")
+                    # Filme und Serien der Person zusammen, jeder Titel einmal, die mit den meisten
+                    # TMDB-Stimmen zuerst. Bis zum 30.10.2026 kamen nur die Filme an, die Serien wurden
+                    # mitgeholt und nie gezeigt (Bryan Cranston ohne Breaking Bad). Gemessen an ihm:
+                    # tv_credits fuehrt eine Serie je Rolle (Family Guy sechsmal), und nach TMDB-Popularitaet
+                    # staenden Gastrollen (Family Guy, Simpsons, Baywatch) vor Breaking Bad — nach Stimmen
+                    # kommen Breaking Bad, Der Soldat James Ryan, Drive.
+                    meta_credits = []
+                    seen = set()
+                    for typ in ('movie_credits', 'tv_credits'):
+                        for c in (meta.get(typ) or {}).get('cast') or []:
+                            if (typ, c.get('id')) not in seen:
+                                seen.add((typ, c.get('id')))
+                                meta_credits.append(c)
+                    meta_credits.sort(key=lambda c: c.get('vote_count') or 0, reverse=True)
                     self.credit(meta_credits, 5215)
                     personName = meta['name']
                     if not meta['deathday']:
@@ -185,13 +231,13 @@ def WindowsBoxes(sTitle, sFileName, metaType, year=''):
                         try:
                             birthday = datetime(*(time.strptime(meta['birthday'], '%Y-%m-%d')[0:6]))
                             age = today.year - birthday.year - ((today.month, today.day) < (birthday.month, birthday.day))
-                            age = '%s Jahre' % age
+                            age = cConfig().getLocalizedString(30901) % age
                         except Exception:
                             age = ''
                     else:
-                        age = meta['deathday']
+                        age = _regionDate(meta['deathday'])
                     self.setProperty('Person_name', personName)
-                    self.setProperty('Person_birthday', meta['birthday'])
+                    self.setProperty('Person_birthday', _regionDate(meta['birthday']))
                     self.setProperty('Person_place_of_birth', meta['place_of_birth'])
                     self.setProperty('Person_deathday', str(age))
                     self.setProperty('Person_biography', meta['biography'])
@@ -222,14 +268,15 @@ def WindowsBoxes(sTitle, sFileName, metaType, year=''):
             elif controlId == 5215 or controlId == 5205 or controlId == 5210:
                 item = self.getControl(controlId).getSelectedItem()
                 self.close()
-                xbmc.executebuiltin("Container.Update(%s?function=searchTMDB&%s)" % ('plugin://plugin.video.xstream/', urlencode({'searchTitle': item.getLabel()})))
+                # Weitere Quellen (searchAlter) wie Kontextmenue und TMDB-Browser — eine Suche mit
+                # Ergebnis-Cache, Titelfilter und Hinweis bei null Treffern. Bis zum 30.10.2026 lief hier
+                # eine eigene Sammelsuche (searchTMDB) ohne Cache: Kodi ruft das Verzeichnis nach einem
+                # Stream und beim Zurueck erneut auf, und jedes Mal suchten alle Seiten noch einmal.
+                xbmc.executebuiltin("Container.Update(%s?function=searchAlter&%s)" % ('plugin://plugin.video.xstream/', urlencode({'searchTitle': item.getLabel()})))
                 return
 
         def onFocus(self, controlId):
             self.controlId = controlId
-
-        def _close_dialog(self):
-            self.close()
 
         def onAction(self, action):
             if action.getId() in (104, 105, 1, 2):
@@ -241,4 +288,8 @@ def WindowsBoxes(sTitle, sFileName, metaType, year=''):
     path = 'special://home/addons/%s' % cConfig().getAddonInfo('id')   
     wd = XMLDialog('info.xml', path, 'default', '720p')
     wd.doModal()
-    del wd
+    # Fenster bis zum Skriptende halten statt es hier freizugeben: Kodis neue
+    # SWIG-Anbindung gibt sonst die Fensterklasse samt Modul nicht mehr frei —
+    # Grund und Beleg bei cPlayer._players in resources/lib/player.py, fuer
+    # Fenster-Unterklassen gilt dasselbe.
+    _dialogs.append(wd)

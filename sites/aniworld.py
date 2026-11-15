@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 # Python 3
 
-#Always pay attention to the translations in the menu!
+# Always pay attention to the translations in the menu!
 # Sprachauswahl für Hoster enthalten.
 # 2022-12-06 Heptamer - Suchfunktion überarbeitet
 
 import ast
+import concurrent.futures
+import datetime
 import re
 import xbmcgui
 
@@ -34,7 +36,6 @@ URL_SERIES = URL_MAIN + '/animes'
 URL_POPULAR = URL_MAIN + '/beliebte-animes'
 URL_NEW_EPISODES = URL_MAIN + '/neue-episoden'
 URL_NEW_ANIMES = URL_MAIN          # "Neue Animes" Sektion liegt auf der Startseite
-URL_LOGIN = URL_MAIN + '/login'
 REFERER = 'https://' + DOMAIN
 
 
@@ -43,21 +44,17 @@ def load():
     xbmcgui.Window(10000).clearProperty('xstream.aniworld.lastSearchText')
     xbmcgui.Window(10000).clearProperty('xstream.aniworld.lastYear')
     params = ParameterHandler()
-    # Login ist optional — Settings 'aniworld.user' / 'aniworld.pass' bleiben
-    # in settings.xml verfuegbar. Bei gesetzten Credentials wird in
-    # getHosterUrl() ein Login-POST gemacht (Cookie-basiert), sonst direkt
-    # Hoster geholt — Backend funktioniert auch ohne Login.
 
     # Neues  (Animes + Episoden)
     cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30813), SITE_IDENTIFIER, 'showNeues'), params)
-    # Beliebte Animes
+    # Beliebt (30519; die Liste heisst auf der Seite Beliebte Animes)
     params.setParam('sUrl', URL_POPULAR)
     cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30519), SITE_IDENTIFIER, 'showEntries'), params)
     # Genres (lädt direkt die Genre-Liste)
     params.setParam('sUrl', URL_MAIN)
     params.setParam('sCont', 'homeContentGenresList')
     cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30815), SITE_IDENTIFIER, 'showValue'), params)
-    # Aki: Jahr-Suche (User gibt Jahr ein, /animes/jahr/YYYY)
+    # Jahr-Suche (User gibt Jahr ein, /animes/jahr/YYYY)
     params = ParameterHandler()
     cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30564), SITE_IDENTIFIER, 'showYearSearch'), params)
     # A-Z (direkt in die Buchstaben-Auswahl)
@@ -79,19 +76,6 @@ def showNeues():
     # Episoden
     params.setParam('sUrl', URL_NEW_EPISODES)
     cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30557), SITE_IDENTIFIER, 'showNewEpisodes'), params)  # Episoden (30557 wie SerienStream und Burningseries)
-    cGui().setEndOfDirectory()
-
-
-def showAZMenu():
-    """Submenu: Alle Serien + A-Z"""
-    params = ParameterHandler()
-    # Alle Serien
-    params.setParam('sUrl', URL_SERIES)
-    cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30518), SITE_IDENTIFIER, 'showAllSeries'), params)
-    # A-Z
-    params.setParam('sUrl', URL_MAIN)
-    params.setParam('sCont', 'catalogNav')
-    cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30814), SITE_IDENTIFIER, 'showValue'), params)
     cGui().setEndOfDirectory()
 
 
@@ -185,12 +169,21 @@ PAGE_WINDOW = 15
 
 def _pageInfo(sHtmlContent):
     """Seitenlage fuer den Weiter-Eintrag: (aktuelle Seite, letzte Seite) aus der
-    Blaetterleiste. Letzte Seite ist 0, wenn die Leiste abgeschnitten ist."""
+    Blaetterleiste. Letzte Seite ist 0, wenn die Leiste abgeschnitten ist und
+    keinen Ende-Link traegt."""
     isMatch, sNav = cParser.parseSingleResult(sHtmlContent, r'(<div class="hosterSiteDirectNav pagination">.*?</ul>)')
     if not isMatch:
         return 0, 0
     isMatch, sActive = cParser.parseSingleResult(sNav, r'class="active"[^>]*>(\d+)')
     iCurrent = int(sActive) if isMatch else 1
+    # Reicht die Liste ueber das Fenster der Leiste hinaus, haengt die Seite einen
+    # "Ende"-Link an, dessen letztes Pfadstueck die letzte Seite ist
+    # (/genre/drama/33 — gemessen 09.10.2026 ueber eine Spiegeldomain, an der
+    # Hauptdomain am Geraet bestaetigt). Er fehlt, sobald das Fenster das Ende erreicht; dann
+    # entscheidet unten die hoechste Zahl der Leiste.
+    isMatch, sEnde = cParser.parseSingleResult(sNav, r'href="[^"]*/(\d+)/?"[^>]*>Ende</a>')
+    if isMatch:
+        return iCurrent, int(sEnde)
     aNums = [int(x) for x in re.findall(r'>(\d{1,5})<', sNav)]
     if not aNums:
         return iCurrent, 0
@@ -217,32 +210,6 @@ def showValue():
         params.setParam('sUrl', sUrl)
         cGui().addFolder(cGuiElement(sName, SITE_IDENTIFIER, 'showEntries'), params)
     cGui().setEndOfDirectory()
-
-
-def showAllSeries(entryUrl=False, sGui=False, sSearchText=False):
-    oGui = sGui if sGui else cGui()
-    params = ParameterHandler()
-    if not entryUrl: entryUrl = params.getValue('sUrl')
-    oRequest = cRequestHandler(entryUrl, ignoreErrors=(sGui is not False))
-    sHtmlContent = oRequest.request()
-    pattern = '<a[^>]*href="(\\/anime\\/[^"]*)"[^>]*>(.*?)</a>'
-    isMatch, aResult = cParser.parse(sHtmlContent, pattern)
-    if not isMatch:
-        if not sGui: oGui.showInfo()
-        return
-
-    total = len(aResult)
-    for sUrl, sName in aResult:
-        if sSearchText and not cParser.searchTitle(sSearchText, sName):
-            continue
-        oGuiElement = cGuiElement(sName, SITE_IDENTIFIER, 'showSeasons')
-        oGuiElement.setMediaType('tvshow')
-        params.setParam('sUrl', URL_MAIN + sUrl)
-        params.setParam('TVShowTitle', sName)
-        oGui.addFolder(oGuiElement, params, True, total)
-    if not sGui:
-        oGui.setView('tvshows')
-        oGui.setEndOfDirectory()
 
 
 def showNewEpisodes(entryUrl=False, sGui=False):
@@ -339,7 +306,7 @@ def showSeasons():
         if sThumbnail.startswith('/'):
             sThumbnail = URL_MAIN + sThumbnail
 
-    # Aki: Year aus Detail-Seite extrahieren (itemprop="startDate")
+    # Year aus Detail-Seite extrahieren (itemprop="startDate")
     sYear = ''
     year_match = re.search(r'itemprop="startDate"[^>]*>\s*<a[^>]*>(\d{4})</a>', sHtmlContent)
     if year_match:
@@ -406,15 +373,16 @@ def showEpisodes():
     isDesc, sDesc = cParser.parseSingleResult(sHtmlContent, '<p[^>]*data-full-description="(.*?)"[^>]*>')
     total = len(aResult)
     for sID, sUrl2, sNameGer, sNameEng in aResult:
-        sName = '%d - ' % int(sID)
         if isMovieList == True:
-            sName += sNameGer + '- ' + sNameEng
+            sName = '%d - ' % int(sID) + sNameGer + '- ' + sNameEng   # Filmliste: Label wie bisher, die Filme sind Specials
         else:
-            sName += sNameGer if sNameGer else sNameEng
+            # eine Form auf allen Sites ("S01E05 - Titel"); steht deutsch nur der Platzhalter „Folge N",
+            # nimmt der Helfer den englischen Titel (seit dem 05.11.2026)
+            sName = cParser.episodeLabel(sSeason, sID, sNameGer, altTitle=sNameEng)
         oGuiElement = cGuiElement(sName, SITE_IDENTIFIER, 'showHosters')
         oGuiElement.setMediaType('episode' if not isMovieList else 'movie')
         if isMovieList == True:
-            # Aki: Clean Title fuer Trailer-Match (Display-Label hat Episode-Prefix)
+            # Clean Title fuer Trailer-Match (Display-Label hat Episode-Prefix)
             cleanTitle = (sNameEng or sNameGer or '').strip(' -')
             if cleanTitle:
                 oGuiElement.addItemValue('originaltitle', cleanTitle)
@@ -436,147 +404,80 @@ def showHosters():
     hosters = []
     sUrl = ParameterHandler().getValue('sUrl')
     sHtmlContent = cRequestHandler(sUrl, caching=False).request()
-    if cConfig().getSetting('plugin_' + SITE_IDENTIFIER + '.domain') == 'www.aniworld.info':
-        pattern = r'<li[^>]*episodeLink([^"]+)"\sdata-lang-key="([^"]+).*?data-link-target="([^"]+).*?<h4>([^<]+)<([^>]+)'
-        pattern2 = r'itemprop="keywords".content=".*?Season...([^"]+).S.*?'  # HD Kennzeichen
-        # data-lang-key="1" Deutsch
-        # data-lang-key="2" Japanisch mit englischen Untertitel
-        # data-lang-key="3" Japanisch mit deutschen Untertitel
-        isMatch, aResult = cParser.parse(sHtmlContent, pattern)
-        aResult2 = cParser.parse(sHtmlContent, pattern2)
-        if isMatch:
-            for sID, sLang, sUrl, sName, sQuality in aResult:
-                sUrl = sUrl.replace('/dl/2010', '/redirect/' + sID)
-                if cConfig().isBlockedHoster(sName)[0]: continue # Hoster aus settings.xml oder deaktivierten Resolver ausschließen
-                sLanguage = cConfig().getSetting('prefLanguage')
-                if sLanguage == '1':        # Voreingestellte Sprache Deutsch in settings.xml
-                    if '2' in sLang:        # data-lang-key="2" Japanisch mit englischen Untertitel
-                        continue
-                    elif '3' in sLang:        # data-lang-key="3" Japanisch mit deutschen Untertitel
-                        continue
-                    elif sLang == '1':        # data-lang-key="1" Deutsch
-                        sLang = '(DE)'
-                if sLanguage == '2':        # Voreingestellte Sprache Englisch in settings.xml
-                    continue                # AniWorld hat kein reines Englisch — der Hinweis
-                                            # kommt unten ueber 'if not hosters', sonst poppte
-                                            # der Dialog einmal PRO Hoster-Eintrag
-                if sLanguage == '3':        # Voreingestellte Sprache Japanisch in settings.xml
-                    if '1' in sLang:        # data-lang-key="1" Deutsch
-                        continue
-                    elif sLang == '3':        # data-lang-key="3" Japanisch mit deutschen Untertitel
-                        sLang = '(JPN) Sub: (DE)'
-                    elif sLang == '2':       # data-lang-key="2" Japanisch mit englischen Untertitel
-                        sLang = '(JPN) Sub: (EN)'
-                if sLanguage == '0':        # Alle Sprachen
-                    if sLang == '1':    # data-lang-key="1"
-                        sLang = '(DE)'
-                    elif sLang == '3':  # data-lang-key="3"
-                        sLang = '(JPN) Sub: (DE)'
-                    elif sLang == '2':    # data-lang-key="2"
-                        sLang = '(JPN) Sub: (EN)'
-                if 'HD' in aResult2[1]:
-                    sQuality = '720'
-                else:
-                    sQuality = '480'
-                    # link = [url, name]: der Name wird in gui/hoster.py mit ausgewertet
-                    # (Beispiel aus dem Log: ['/redirect/12286260', 'VOE']).
-                hoster = {'link': [sUrl, sName], 'name': sName, 'displayedName': '%s [I]%s [%sp][/I]' % (sName, sLang, sQuality), 'quality': sQuality, 'languageCode': sLang} # Language Code für hoster.py Sprache Prio
-                hosters.append(hoster)
-            if hosters:
-                hosters.append('getHosterUrl')
-            if not hosters:
-                cGui().showLanguage()
-            return hosters
-    else:
-        pattern = '<li[^>]*data-lang-key="([^"]+).*?data-link-target="([^"]+).*?<h4>([^<]+)<([^>]+)'
-        pattern2 = 'itemprop="keywords".content=".*?Season...([^"]+).S.*?'  # HD Kennzeichen
-        # data-lang-key="1" Deutsch
-        # data-lang-key="2" Japanisch mit englischen Untertitel
-        # data-lang-key="3" Japanisch mit deutschen Untertitel
-        isMatch, aResult = cParser.parse(sHtmlContent, pattern)
-        aResult2 = cParser.parse(sHtmlContent, pattern2)
-        if isMatch:
-            for sLang, sUrl, sName, sQuality in aResult:
-                if cConfig().isBlockedHoster(sName)[0]: continue # Hoster aus settings.xml oder deaktivierten Resolver ausschließen
-                sLanguage = cConfig().getSetting('prefLanguage')
-                if sLanguage == '1':  # Voreingestellte Sprache Deutsch in settings.xml
-                    if '2' in sLang:  # data-lang-key="2" Japanisch mit englischen Untertitel
-                        continue
-                    elif '3' in sLang:  # data-lang-key="3" Japanisch mit deutschen Untertitel
-                        continue
-                    elif sLang == '1':  # data-lang-key="1" Deutsch
-                        sLang = '(DE)'
-                if sLanguage == '2':  # Voreingestellte Sprache Englisch in settings.xml
-                    continue              # AniWorld hat kein reines Englisch — der Hinweis
-                                          # kommt unten ueber 'if not hosters', sonst poppte
-                                          # der Dialog einmal PRO Hoster-Eintrag
-                if sLanguage == '3':  # Voreingestellte Sprache Japanisch in settings.xml
-                    if '1' in sLang:  # data-lang-key="1" Deutsch
-                        continue
-                    elif sLang == '3':  # data-lang-key="3" Japanisch mit deutschen Untertitel
-                        sLang = '(JPN) Sub: (DE)'
-                    elif sLang == '2':  # data-lang-key="2" Japanisch mit englischen Untertitel
-                        sLang = '(JPN) Sub: (EN)'
-                if sLanguage == '0':  # Alle Sprachen
-                    if sLang == '1':  # data-lang-key="1"
-                        sLang = '(DE)'
-                    elif sLang == '3':  # data-lang-key="3"
-                        sLang = '(JPN) Sub: (DE)'
-                    elif sLang == '2':  # data-lang-key="2"
-                        sLang = '(JPN) Sub: (EN)'
-                if 'HD' in aResult2[1]:
-                    sQuality = '720'
-                else:
-                    sQuality = '480'
-                    # link = [url, name]: der Name wird in gui/hoster.py mit ausgewertet
-                    # (Beispiel aus dem Log: ['/redirect/12286260', 'VOE']).
-                hoster = {'link': [sUrl, sName], 'name': sName, 'displayedName': '%s [I]%s [%sp][/I]' % (sName, sLang, sQuality), 'quality': sQuality, 'languageCode': sLang} # Language Code für hoster.py Sprache Prio
-                hosters.append(hoster)
-            if hosters:
-                hosters.append('getHosterUrl')
-            if not hosters:
-                cGui().showLanguage()
-            return hosters
+    pattern = '<li[^>]*data-lang-key="([^"]+).*?data-link-target="([^"]+).*?<h4>([^<]+)<([^>]+)'
+    pattern2 = 'itemprop="keywords".content=".*?Season...([^"]+).S.*?'  # HD Kennzeichen
+    # data-lang-key="1" Deutsch
+    # data-lang-key="2" Japanisch mit englischen Untertitel
+    # data-lang-key="3" Japanisch mit deutschen Untertitel
+    isMatch, aResult = cParser.parse(sHtmlContent, pattern)
+    aResult2 = cParser.parse(sHtmlContent, pattern2)
+    if isMatch:
+        for sLang, sUrl, sName, sQuality in aResult:
+            if cConfig().isBlockedHoster(sName)[0]: continue # Hoster aus settings.xml oder deaktivierten Resolver ausschließen
+            sLanguage = cConfig().getSetting('prefLanguage')
+            if sLanguage == '1':  # Voreingestellte Sprache Deutsch in settings.xml
+                if '2' in sLang:  # data-lang-key="2" Japanisch mit englischen Untertitel
+                    continue
+                elif '3' in sLang:  # data-lang-key="3" Japanisch mit deutschen Untertitel
+                    continue
+                elif sLang == '1':  # data-lang-key="1" Deutsch
+                    sLang = '(DE)'
+            if sLanguage == '2':  # Voreingestellte Sprache Englisch in settings.xml
+                continue              # AniWorld hat kein reines Englisch — der Hinweis
+                                      # kommt unten ueber 'if not hosters', sonst poppte
+                                      # der Dialog einmal PRO Hoster-Eintrag
+            if sLanguage == '3':  # Voreingestellte Sprache Japanisch in settings.xml
+                if '1' in sLang:  # data-lang-key="1" Deutsch
+                    continue
+                elif sLang == '3':  # data-lang-key="3" Japanisch mit deutschen Untertitel
+                    sLang = '(JPN) Sub: (DE)'
+                elif sLang == '2':  # data-lang-key="2" Japanisch mit englischen Untertitel
+                    sLang = '(JPN) Sub: (EN)'
+            if sLanguage == '0':  # Alle Sprachen
+                if sLang == '1':  # data-lang-key="1"
+                    sLang = '(DE)'
+                elif sLang == '3':  # data-lang-key="3"
+                    sLang = '(JPN) Sub: (DE)'
+                elif sLang == '2':  # data-lang-key="2"
+                    sLang = '(JPN) Sub: (EN)'
+            if 'HD' in aResult2[1]:
+                sQuality = '720'
+            else:
+                sQuality = '480'
+                # link = [url, name]: der Name wird in gui/hoster.py mit ausgewertet
+                # (Beispiel aus dem Log: ['/redirect/12286260', 'VOE']).
+            hoster = {'link': [sUrl, sName], 'name': sName, 'displayedName': '%s [I]%s [%sp][/I]' % (sName, sLang, sQuality), 'quality': sQuality, 'languageCode': sLang} # Language Code für hoster.py Sprache Prio
+            hosters.append(hoster)
+        if hosters:
+            hosters.append('getHosterUrl')
+        if not hosters:
+            cGui().showLanguage()
+        return hosters
 
 
 def getHosterUrl(hUrl):
     if type(hUrl) == str: hUrl = ast.literal_eval(hUrl)
-    username = cConfig().getSetting('aniworld.user')
-    password = cConfig().getSetting('aniworld.pass')
 
-    # Login ist optional: mit gesetzten Zugangsdaten wird vorher ein
-    # Cookie-Login gemacht. Er hat keinen Einfluss auf Hoster oder Qualitaet —
-    # ohne Zugangsdaten geht es direkt zur Hoster-URL, die Seite liefert dasselbe.
-    if username and password:
-        Handler = cRequestHandler(URL_LOGIN, caching=False)
-        Handler.addHeaderEntry('Upgrade-Insecure-Requests', '1')
-        Handler.addHeaderEntry('Referer', ParameterHandler().getValue('entryUrl'))
-        Handler.addParameters('email', username)
-        Handler.addParameters('password', password)
-        Handler.request()
-
-    # DoodStream: haengt hinter Cloudflare.
-    # Embed-Seite selbst zu laden triggert den CF-Block ("CLOUDFLARE-SCHUTZ AKTIV").
-    # Wir reichen daher nur das Redirect-Ziel an ResolveURL weiter (wie einschalten),
-    # das die Seite selbst aufloest — byparr wird dafuer nicht mehr benoetigt.
+    # DoodStream: haengt hinter Cloudflare. Die Embed-Seite selbst zu laden loest den
+    # CF-Block aus (Meldung 30829 "CloudFlare-Schutz aktiv"). Wir reichen daher nur das
+    # Redirect-Ziel an ResolveURL weiter (wie einschalten), das die Seite selbst aufloest.
     if 'dood' in hUrl[1].lower():
         Request = cRequestHandler(URL_MAIN + hUrl[0], caching=False)
         Request.addHeaderEntry('Referer', ParameterHandler().getValue('entryUrl'))
-        Request.addHeaderEntry('Upgrade-Insecure-Requests', '1')
         return [{'streamUrl': Request.getRedirectUrl(), 'resolved': False}]
 
     Request = cRequestHandler(URL_MAIN + hUrl[0], caching=False)
     Request.addHeaderEntry('Referer', ParameterHandler().getValue('entryUrl'))
-    Request.addHeaderEntry('Upgrade-Insecure-Requests', '1')
     Request.request()
     sUrl = Request.getRealUrl()
     if not sUrl:
-        # Der Abruf der Weiterleitung ist gescheitert (Timeout, Fehler — der
-        # requestHandler hat schon gemeldet). Ohne diese Zeile prueft der
+        # Der Abruf der Weiterleitung ist gescheitert (Timeout als Einblendung
+        # des requestHandlers, sonst Logzeile; hoster.py meldet den fehlenden
+        # Link mit „Kein Hosterlink uebergeben"). Ohne diese Zeile prueft der
         # VOE-Zweig eine LEERE Adresse, ResolveURL kennt sie nicht, und aus
         # ''.replace('', 'voe.sx') wird die Phantasie-Adresse 'voe.sx' — der
-        # Nutzer sah dann noch „Kein unterstuetzter Hoster" obendrauf (Jacks
-        # Log 10.09.2026 ueber eine langsame VPN-Route).
+        # Nutzer sah dann noch „Kein unterstuetzter Hoster" obendrauf (Log vom
+        # 10.09.2026 ueber eine langsame VPN-Route).
         return [{'streamUrl': '', 'resolved': False}]
 
     if 'voe' in hUrl[1].lower():
@@ -600,7 +501,7 @@ def showSearch():
 
 
 def showYearSearch():
-    """Aki: Jahr-Suche — User gibt Jahr ein, oeffnet /animes/jahr/YYYY."""
+    """Jahr-Suche — User gibt Jahr ein, oeffnet /animes/jahr/YYYY."""
     win = xbmcgui.Window(10000)
     sYear = win.getProperty('xstream.aniworld.lastYear')
     if not sYear:
@@ -611,7 +512,10 @@ def showYearSearch():
         sYear = str(cGui().showNumpad(numPadTitle=cConfig().getLocalizedString(30563)) or '').strip()
         if not sYear:
             return
-        if not sYear.isdigit() or len(sYear) != 4 or int(sYear) < 1970:
+        # Obergrenze laufendes Jahr: Jahresseiten in der Zukunft kennt die Seite
+        # nicht (2027 und 9999 antworten mit 404, gemessen 09.10.2026) — ohne die
+        # Grenze stand der Nutzer vor dem Fehlerfenster mit der vollen Adresse.
+        if not sYear.isdigit() or len(sYear) != 4 or not 1970 <= int(sYear) <= datetime.date.today().year:
             cGui().showInfo('xStream', cConfig().getLocalizedString(30563))
             return
         win.setProperty('xstream.aniworld.lastYear', sYear)
@@ -620,7 +524,7 @@ def showYearSearch():
 
 
 def showYearEntries(entryUrl=False, sYear=''):
-    """Aki: Parser fuer /animes/jahr/YYYY Seite (mit Pagination).
+    """Parser fuer /animes/jahr/YYYY Seite (mit Pagination).
     HTML-Struktur: <a href="/anime/stream/..."> <img data-src="..."> <h3>Titel<span></span></h3> <small>Genre</small> </a>
     """
     oGui = cGui()
@@ -660,7 +564,7 @@ def showYearEntries(entryUrl=False, sYear=''):
         params.setParam('TVShowTitle', sName)
         oGui.addFolder(oGuiElement, params, True, total)
 
-    # Aki: Pagination — analog zu showEntries
+    # Pagination — analog zu showEntries
     pag_pattern = 'pagination">.*?<a href="([^"]+)">&gt;</a>.*?</a></div>'
     isMatchNextPage, sNextUrl = cParser.parseSingleResult(sHtmlContent, pag_pattern)
     if isMatchNextPage:
@@ -681,9 +585,6 @@ def SSsearch(sGui=False, sSearchText=False):
     oRequest = cRequestHandler(URL_SERIES, caching=True, ignoreErrors=(sGui is not False))
     oRequest.addHeaderEntry('X-Requested-With', 'XMLHttpRequest')
     oRequest.addHeaderEntry('Referer', REFERER  + '/animes')
-    oRequest.addHeaderEntry('Origin', REFERER)
-    oRequest.addHeaderEntry('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8')
-    oRequest.addHeaderEntry('Upgrade-Insecure-Requests', '1')
     sHtmlContent = oRequest.request()
 
     if not sHtmlContent:
@@ -700,40 +601,67 @@ def SSsearch(sGui=False, sSearchText=False):
         return
 
     total = len(aResult[1])
-    for link, title in aResult[1]:
-        titleLow = title.lower()
-        if not sst in titleLow and not cUtil.isSimilarByToken(sst, titleLow):
-            continue
-        else:
-            #get images thumb / descr pro call. (optional)
-            try:
-                sThumbnail, sDescription = getMetaInfo(link, title)
-                oGuiElement = cGuiElement(title, SITE_IDENTIFIER, 'showSeasons')
-                oGuiElement.setThumbnail(URL_MAIN + sThumbnail)
-                oGuiElement.setDescription(sDescription)
-                oGuiElement.setTVShowTitle(title)
-                oGuiElement.setMediaType('tvshow')
-                params.setParam('sUrl', URL_MAIN + link)
-                params.setParam('sName', title)
-                oGui.addFolder(oGuiElement, params, True, total)
-            except Exception:
-                oGuiElement = cGuiElement(title, SITE_IDENTIFIER, 'showSeasons')
-                oGuiElement.setTVShowTitle(title)
-                oGuiElement.setMediaType('tvshow')
-                params.setParam('sUrl', URL_MAIN + link)
-                params.setParam('sName', title)
-                oGui.addFolder(oGuiElement, params, True, total)
+    iTreffer = 0
+    aHits = [(link, title) for link, title in aResult[1]
+             if sst in title.lower() or cUtil.isSimilarByToken(sst, title.lower())]
+    # Cover und Beschreibung kommen je Treffer von der Detailseite. Nacheinander
+    # geholt summierte sich das auf der Leitung — gemessen 21.10.2026: "dragon"
+    # (31 Treffer) 25 s, "love" (78) 62 s, und in der globalen Suche wartete alles
+    # darauf. Parallel (zehn auf einmal, wie der Meta-Vorlauf cGui.preloadMeta) sind
+    # es 4 bzw. 8 s bei identischer Ausgabe.
+    # Ein gescheiterter Abruf liefert None, der Eintrag kommt dann wie bisher ohne
+    # Cover und Beschreibung; kein Retry (Kosmetik-Stelle).
+    def _meta(oHit):
+        try:
+            return getMetaInfo(oHit[0], oHit[1])
+        except Exception:
+            return None
+    aMeta = []
+    if aHits:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(10, len(aHits))) as oPool:
+            aMeta = list(oPool.map(_meta, aHits))
+    for (link, title), oMeta in zip(aHits, aMeta):
+        # Cover und Beschreibung sind optional: ohne Detailseite kommt der Eintrag
+        # ohne beides (oMeta None, oder getMetaInfo hat nichts gefunden).
+        try:
+            sThumbnail, sDescription = oMeta
+            oGuiElement = cGuiElement(title, SITE_IDENTIFIER, 'showSeasons')
+            oGuiElement.setThumbnail(URL_MAIN + sThumbnail)
+            oGuiElement.setDescription(sDescription)
+            oGuiElement.setTVShowTitle(title)
+            oGuiElement.setMediaType('tvshow')
+            params.setParam('sUrl', URL_MAIN + link)
+            params.setParam('sName', title)
+            oGui.addFolder(oGuiElement, params, True, total)
+        except Exception:
+            oGuiElement = cGuiElement(title, SITE_IDENTIFIER, 'showSeasons')
+            oGuiElement.setTVShowTitle(title)
+            oGuiElement.setMediaType('tvshow')
+            params.setParam('sUrl', URL_MAIN + link)
+            params.setParam('sName', title)
+            oGui.addFolder(oGuiElement, params, True, total)
+        iTreffer += 1
 
         if not sGui:
             oGui.setView('tvshows')
 
+    # Die Seite liefert die ganze Serienliste, gefiltert wird erst hier — ohne
+    # Treffer bekam der Nutzer bis zum 09.10.2026 ein leeres Verzeichnis ohne jede
+    # Erklaerung. Gleiche Bauform wie bei serienstream; in der globalen Suche
+    # unterbleibt der Hinweis, das prueft showInfo anhand des Sammel-Flags selbst.
+    if not sGui and not iTreffer:
+        oGui.showInfo()
+
 
 def getMetaInfo(link, title):
     oGui = cGui()
-    oRequest = cRequestHandler(URL_MAIN + link, caching=False)
+    # Hilfsabruf fuer Cover und Beschreibung eines Treffers: ein Fehler (die Seite
+    # bricht unter den zehn parallelen Abrufen schon mal eine Verbindung ab) bleibt
+    # still — der Eintrag kommt ohne beides. Bis zum 05.11.2026 zeigte der Handler
+    # dafuer je Abbruch sein Fehlerfenster, bei „love" fuenf hintereinander.
+    oRequest = cRequestHandler(URL_MAIN + link, caching=False, ignoreErrors=True)
     oRequest.addHeaderEntry('X-Requested-With', 'XMLHttpRequest')
     oRequest.addHeaderEntry('Referer', REFERER + '/animes')
-    oRequest.addHeaderEntry('Origin', REFERER)
 
     sHtmlContent = oRequest.request()
     if not sHtmlContent:

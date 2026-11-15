@@ -1,27 +1,18 @@
 # Addon Name: xStream
-# Addon id: plugin.video.xStream
-# Addon Provider: xStream
+# Addon id: plugin.video.xstream
 # Benutze folgenden Eintrag für die Übersetzung
 # from resources.lib.config import cConfig + cConfig().getLocalizedString(30041)	
 
 msgid ""
 msgstr ""
 
-msgctxt "#30000"
-msgid "Debug-Mode"
-msgstr "Debug Modus"
-
-msgctxt "#30001"
-msgid "Video-Player"
-msgstr "Video Abspieler"
-
 msgctxt "#30002"
 msgid "Preferred language"
 msgstr "Bevorzugte Sprache"
 
 msgctxt "#30004"
-msgid "Use TMDB handler"
-msgstr "TMDB Handler verwenden"
+msgid "Load TMDB info"
+msgstr "TMDB Infos laden"
 
 msgctxt "#30005"
 msgid "Hoster selection"
@@ -31,49 +22,9 @@ msgctxt "#30006"
 msgid "HTML cache in hours"
 msgstr "HTML Cache in Stunden"
 
-msgctxt "#30007"
-msgid "Max hoster entries"
-msgstr "Max Hoster Einträge"
-
-msgctxt "#30008"
-msgid "TMDB info overrides site info"
-msgstr "TMDB Infos überschreiben Seiteninfos"
-
-msgctxt "#30009"
-msgid "Pre-validate and sort hosterlist"
-msgstr "Hoster-Liste prüfen und sortieren"
-
-msgctxt "#30010"
-msgid "Enable automatic xStream Update"
-msgstr "Automatisches xStream Update aktivieren"
-
-msgctxt "#30011"
-msgid "Global Search at first position"
-msgstr "Globale Suche an erster Position"
-
 msgctxt "#30014"
 msgid "Timeout for requests in sec"
 msgstr "Timeout für Anfragen in Sek"
-
-msgctxt "#30015"
-msgid "Auto ResolveURL Update"
-msgstr "Auto ResolveURL Update"
-
-msgctxt "#30020"
-msgid "General"
-msgstr "Allgemein"
-
-msgctxt "#30021"
-msgid "Site-Plugins"
-msgstr "Indexseiten"
-
-msgctxt "#30022"
-msgid "Views"
-msgstr "Ansichten"
-
-msgctxt "#30024"
-msgid "Accounts"
-msgstr "Konten"
 
 msgctxt "#30025"
 msgid "Bypass DNS block"
@@ -83,25 +34,9 @@ msgctxt "#30027"
 msgid "Trailer"
 msgstr "Trailer"
 
-msgctxt "#30028"
-msgid "Start manual update (one-time)"
-msgstr "Manuelle Aktualisierung (einmalig) starten"
-
 msgctxt "#30029"
 msgid "Keep HTML content in RAM"
 msgstr "HTML Inhalte im RAM speichern"
-
-msgctxt "#30030"
-msgid "ResolveURL Update"
-msgstr "ResolveURL Update"
-
-msgctxt "#30032"
-msgid "Content"
-msgstr "Inhalt"
-
-msgctxt "#30033"
-msgid "TMDB Handler"
-msgstr "TMDB Handler"
 
 msgctxt "#30034"
 msgid "Hoster"
@@ -127,10 +62,6 @@ msgctxt "#30043"
 msgid "ResolveURL Settings"
 msgstr "ResolveURL Einstellungen"
 
-msgctxt "#30044"
-msgid "Advanced Metadata"
-msgstr "Erweiterte Metadaten"
-
 msgctxt "#30050"
 msgid "Use Site-Plugin"
 msgstr "Indexseite verwenden"
@@ -139,85 +70,9 @@ msgctxt "#30052"
 msgid "Use for Global Search"
 msgstr "Für globale Suche nutzen"
 
-msgctxt "#30060"
-msgid "Automatic views"
-msgstr "Automatische Ansichten"
-
-msgctxt "#30061"
-msgid "Default-View"
-msgstr "Standard-Ansicht"
-
-msgctxt "#30062"
-msgid "Movie-View"
-msgstr "Film-Ansicht"
-
-msgctxt "#30063"
-msgid "Series-View"
-msgstr "Serien-Ansicht"
-
-msgctxt "#30064"
-msgid "Season-View"
-msgstr "Staffel-Ansicht"
-
-msgctxt "#30065"
-msgid "Episode-View"
-msgstr "Episoden-Ansicht"
-
-msgctxt "#30075"
-msgid "Send to LinkGrabber only"
-msgstr "Sende nur an LinkGrabber"
-
-msgctxt "#30080"
-msgid "TMDB Info"
-msgstr "TMDB Info"
-
-msgctxt "#30083"
-msgid "E-Mail"
-msgstr "E-Mail"
-
-msgctxt "#30084"
-msgid "Password"
-msgstr "Passwort"
-
-msgctxt "#30093"
-msgid "Start manual nightly update"
-msgstr "Starte manuelles Nightly Update"
-
 msgctxt "#30094"
 msgid "Index"
 msgstr "Index"
-
-msgctxt "#30095"
-msgid "Site-Plugins 2"
-msgstr "Indexseiten 2"
-
-msgctxt "#30096"
-msgid "xStream Update"
-msgstr "xStream Aktualisierung"
-
-msgctxt "#30097"
-msgid "[COLOR red]Nightly versions can contain new functions, but also bugs.[/COLOR]"
-msgstr "[COLOR red]Nightly - Versionen können neue Funktionen, aber auch Fehler enthalten.[/COLOR]"
-
-msgctxt "#30098"
-msgid "Choose Resolver Github Branch"
-msgstr "Wähle Resolver Github Branch"
-
-msgctxt "#30099"
-msgid "Branch Info:		[COLOR green]Release - Version directly from Gujal00´s Github.[/COLOR]"
-msgstr "Branch Info:		[COLOR green]Release - Version direkt von Gujal00´s Github.[/COLOR]"
-
-msgctxt "#30100"
-msgid "Branch Info:		[COLOR orange]Nightly - Version with hotfixes from the xStream team.[/COLOR]"
-msgstr "Branch Info:		[COLOR orange]Nightly - Version mit Hotfixes vom xStream Team.[/COLOR]"
-
-msgctxt "#30101"
-msgid "[COLOR green]Release - Version directly from Gujal00´s Github.[/COLOR][CR][COLOR orange]Nightly - Version with hotfixes from the xStream team.[/COLOR]"
-msgstr "[COLOR green]Release - Version direkt von Gujal00´s Github.[/COLOR][CR][COLOR orange]Nightly - Version mit Hotfixes vom xStream Team.[/COLOR]"
-
-msgctxt "#30102"
-msgid "Perform manual update (only once)"
-msgstr "Manuelles Update durchführen (nur einmalig)"
 
 msgctxt "#30103"
 msgid "German"
@@ -230,22 +85,6 @@ msgstr "Englisch"
 msgctxt "#30105"
 msgid "All languages"
 msgstr "Alle Sprachen"
-
-msgctxt "#30112"
-msgid "Search for updates ..."
-msgstr "Suche nach Aktualisierungen ..."
-
-msgctxt "#30113"
-msgid "xStream update installed successfully."
-msgstr "xStream Aktualisierung erfolgreich installiert."
-
-msgctxt "#30114"
-msgid "xStream update finished with errors."
-msgstr "xStream Aktualisierung mit Fehlern beendet."
-
-msgctxt "#30115"
-msgid "No xStream update available."
-msgstr "Keine xStream Aktualisierung verfügbar."
 
 msgctxt "#30116"
 msgid "ResolveURL update successful"
@@ -279,10 +118,6 @@ msgctxt "#30123"
 msgid "Searching ..."
 msgstr "Suche ..."
 
-msgctxt "#30124"
-msgid "Browse index pages:   "
-msgstr "Durchsuche Indexseiten:   "
-
 msgctxt "#30125"
 msgid " search complete"
 msgstr " Suche abgeschlossen"
@@ -311,14 +146,6 @@ msgctxt "#30131"
 msgid "List view"
 msgstr "Listenansicht"
 
-msgctxt "#30132"
-msgid "Load files in the background"
-msgstr "Dateien im Hintergrund laden"
-
-msgctxt "#30133"
-msgid "Color"
-msgstr "Farbe"
-
 msgctxt "#30134"
 msgid "No hoster link passed"
 msgstr "Kein Hosterlink übergeben"
@@ -326,14 +153,6 @@ msgstr "Kein Hosterlink übergeben"
 msgctxt "#30135"
 msgid "Stream not available // broken link"
 msgstr "Stream nicht verfügbar // Link defekt"
-
-msgctxt "#30136"
-msgid "Playlist"
-msgstr "Abspielliste"
-
-msgctxt "#30137"
-msgid "Added to playlist"
-msgstr "Zur Abspielliste hinzugefügt"
 
 msgctxt "#30138"
 msgid "Load stream or hoster"
@@ -387,357 +206,17 @@ msgctxt "#30150"
 msgid "Please select part"
 msgstr "Bitte Teil auswählen"
 
-msgctxt "#30151"
-msgid "xStream Update Manager"
-msgstr "xStream Aktualisierungsmanager"
-
-msgctxt "#30152"
-msgid "Welcome to the xStream update manager. For automatic update please set the desired branch selection in the settings, for manual update please choose what should be updated in the following windows."
-msgstr "Willkommen beim xStream Aktualisierungsmanager. Für die automatische Aktualisierung wähle den Branch in den Einstellungen, für die manuelle wähle in den nächsten Fenstern aus, was aktualisiert werden soll."
-
-msgctxt "#30153"
-msgid "Update all addons"
-msgstr "Alle Addons aktualisieren"
-
-msgctxt "#30154"
-msgid "perform"
-msgstr "durchführen"
-
-msgctxt "#30155"
-msgid "Please select whether you want to perform the xStream [Release] or [Nightly] update.[CR][COLOR green]Release versions have been tested and contain hardly any errors.[/COLOR][CR][COLOR orange]Nightly - versions are experimental and may contain bugs.[/COLOR]"
-msgstr "Wähle aus, ob du die xStream [Release]- oder [Nightly]-Aktualisierung durchführen möchtest.[CR][COLOR green]Release - Versionen sind getestet und enthalten kaum Fehler.[/COLOR][CR][COLOR orange]Nightly - Versionen sind experimentell und können Fehler enthalten.[/COLOR]"
-
-msgctxt "#30156"
-msgid "When updating "
-msgstr "Bei der Aktualisierung von "
-
-msgctxt "#30157"
-msgid " an error has occurred."
-msgstr " ist ein Fehler aufgetreten."
-
-msgctxt "#30158"
-msgid "The installation is now complete![CR]"
-msgstr "Die Installation ist nun abgeschlossen![CR]"
-
-msgctxt "#30159"
-msgid " - has been updated successfully."
-msgstr " - wurde erfolgreich aktualisiert."
-
-msgctxt "#30160"
-msgid "The search to updates is now complete![CR]"
-msgstr "Die Suche nach Aktualisierungen ist nun abgeschlossen![CR]"
-
-msgctxt "#30161"
-msgid " - No update available."
-msgstr " - Keine Aktualisierung verfügbar."
-
-msgctxt "#30162"
-msgid "Install"
-msgstr "Installieren"
-
-msgctxt "#30163"
-msgid "Cancel"
-msgstr "Abbrechen"
-
 msgctxt "#30164"
 msgid "Clear HTML cache after days"
 msgstr "HTML Cache löschen nach Tagen"
-
-msgctxt "#30165"
-msgid "Delete HTML cache now"
-msgstr "HTML Cache jetzt löschen"
-
-msgctxt "#30166"
-msgid "[xStream]"
-msgstr "[xStream]"
-
-msgctxt "#30167"
-msgid "Choose xStream Github Branch"
-msgstr "Wähle xStream Github Branch"
-
-msgctxt "#30168"
-msgid "Branch Info:		[COLOR green]Release - Version directly from xStream Github.[/COLOR]"
-msgstr "Branch Info:		[COLOR green]Release - Version direkt vom xStream Github.[/COLOR]"
-
-msgctxt "#30169"
-msgid "Branch Info:		[COLOR orange]Nightly - Version with hotfixes from the xStream team.[/COLOR]"
-msgstr "Branch Info:		[COLOR orange]Nightly - Version mit Hotfixes vom xStream Team.[/COLOR]"
-
-msgctxt "#30170"
-msgid "Posters Size"
-msgstr "Größe des Posters"
-
-msgctxt "#30171"
-msgid "Fanarts Size"
-msgstr "Größe der Fanart"
-
-msgctxt "#30172"
-msgid "TMDB language"
-msgstr "TMDB Sprache"
-
-msgctxt "#30173"
-msgid "[COLOR green]Release - Version directly from xStream Github.[/COLOR][CR][COLOR orange]Nightly - Version with hotfixes from the xStream team.[/COLOR]"
-msgstr "[COLOR green]Release - Version direkt vom xStream Github.[/COLOR][CR][COLOR orange]Nightly - Version mit Hotfixes vom xStream Team.[/COLOR]"
 
 msgctxt "#30174"
 msgid "TMDB"
 msgstr "TMDB"
 
-msgctxt "#30175"
-msgid "English"
-msgstr "Englisch"
-
-msgctxt "#30176"
-msgid "German"
-msgstr "Deutsch"
-
-msgctxt "#30177"
-msgid "French"
-msgstr "Französisch"
-
-msgctxt "#30178"
-msgid "Italian"
-msgstr "Italienisch"
-
-msgctxt "#30179"
-msgid "Dutch"
-msgstr "Niederländisch"
-
-msgctxt "#30180"
-msgid "Swedish"
-msgstr "Schwedisch"
-
-msgctxt "#30181"
-msgid "Czech"
-msgstr "Tschechisch"
-
-msgctxt "#30182"
-msgid "Danish"
-msgstr "Dänisch"
-
-msgctxt "#30183"
-msgid "Finnish"
-msgstr "Finnisch"
-
-msgctxt "#30184"
-msgid "Polish"
-msgstr "Polnisch"
-
-msgctxt "#30185"
-msgid "Spanish"
-msgstr "Spanisch"
-
-msgctxt "#30186"
-msgid "Greek"
-msgstr "Griechisch"
-
-msgctxt "#30187"
-msgid "Turkish"
-msgstr "Türkisch"
-
-msgctxt "#30188"
-msgid "Ukrainian"
-msgstr "Ukrainisch"
-
-msgctxt "#30189"
-msgid "Russian"
-msgstr "Russisch"
-
-msgctxt "#30190"
-msgid "Kannada"
-msgstr "Kannada"
-
-msgctxt "#30191"
-msgid "Irish"
-msgstr "Irisch"
-
-msgctxt "#30192"
-msgid "Croatian"
-msgstr "Kroatisch"
-
-msgctxt "#30193"
-msgid "Hungarian"
-msgstr "Ungarisch"
-
 msgctxt "#30194"
 msgid "Japanese"
 msgstr "Japanisch"
-
-msgctxt "#30195"
-msgid "Norwegian"
-msgstr "Norwegisch"
-
-msgctxt "#30196"
-msgid "Indonesian"
-msgstr "Indonesisch"
-
-msgctxt "#30197"
-msgid "Korean"
-msgstr "Koreanisch"
-
-msgctxt "#30198"
-msgid "Portuguese"
-msgstr "Portugiesisch"
-
-msgctxt "#30199"
-msgid "Latvian"
-msgstr "Lettisch"
-
-msgctxt "#30200"
-msgid "Lithuanian"
-msgstr "Litauisch"
-
-msgctxt "#30201"
-msgid "Romanian"
-msgstr "Rumänisch"
-
-msgctxt "#30202"
-msgid "Slovak"
-msgstr "Slowakisch"
-
-msgctxt "#30203"
-msgid "Slovenian"
-msgstr "Slowenisch"
-
-msgctxt "#30204"
-msgid "Albanian"
-msgstr "Albanisch"
-
-msgctxt "#30205"
-msgid "Serbian"
-msgstr "Serbisch"
-
-msgctxt "#30206"
-msgid "Thai"
-msgstr "Thailändisch"
-
-msgctxt "#30207"
-msgid "Vietnamese"
-msgstr "Vietnamesisch"
-
-msgctxt "#30208"
-msgid "Bulgarian"
-msgstr "Bulgarisch"
-
-msgctxt "#30209"
-msgid "Persian"
-msgstr "Persisch"
-
-msgctxt "#30210"
-msgid "Armenian"
-msgstr "Armenisch"
-
-msgctxt "#30211"
-msgid "Georgian"
-msgstr "Georgisch"
-
-msgctxt "#30212"
-msgid "Arabic"
-msgstr "Arabisch"
-
-msgctxt "#30213"
-msgid "Afrikaans"
-msgstr "Afrikaans"
-
-msgctxt "#30214"
-msgid "Bosnian"
-msgstr "Bosnisch"
-
-msgctxt "#30215"
-msgid "Mandarin"
-msgstr "Chinesisch (Mandarin)"
-
-msgctxt "#30216"
-msgid "Cantonese"
-msgstr "Kantonesisch"
-
-msgctxt "#30217"
-msgid "Hindi"
-msgstr "Hindi"
-
-msgctxt "#30218"
-msgid "Light blue"
-msgstr "Hellblau"
-
-msgctxt "#30219"
-msgid "Light coral"
-msgstr "Hellkoralle"
-
-msgctxt "#30220"
-msgid "Light cyan"
-msgstr "Hellcyan"
-
-msgctxt "#30221"
-msgid "Light green"
-msgstr "Hellgrün"
-
-msgctxt "#30222"
-msgid "Light grey"
-msgstr "Hellgrau"
-
-msgctxt "#30223"
-msgid "Light pink"
-msgstr "Hellpink"
-
-msgctxt "#30224"
-msgid "Light salmon"
-msgstr "Helllachs"
-
-msgctxt "#30225"
-msgid "Light sea green"
-msgstr "Hellmeergrün"
-
-msgctxt "#30226"
-msgid "Light sky blue"
-msgstr "Hellhimmelblau"
-
-msgctxt "#30227"
-msgid "Light slate grey"
-msgstr "Hellschiefergrau"
-
-msgctxt "#30228"
-msgid "Light steel blue"
-msgstr "Hellstahlblau"
-
-msgctxt "#30229"
-msgid "Light yellow"
-msgstr "Hellgelb"
-
-msgctxt "#30230"
-msgid "Alice blue"
-msgstr "Aliceblau"
-
-msgctxt "#30231"
-msgid "Coral"
-msgstr "Koralle"
-
-msgctxt "#30232"
-msgid "Lavender"
-msgstr "Lavendel"
-
-msgctxt "#30233"
-msgid "Lemon chiffon"
-msgstr "Zitronenchiffon"
-
-msgctxt "#30234"
-msgid "Moccasin"
-msgstr "Mokassin"
-
-msgctxt "#30235"
-msgid "Pink"
-msgstr "Rosa"
-
-msgctxt "#30236"
-msgid "Plum"
-msgstr "Pflaume"
-
-msgctxt "#30237"
-msgid "Powder blue"
-msgstr "Puderblau"
-
-msgctxt "#30238"
-msgid "Seashell"
-msgstr "Muschelfarben"
 
 msgctxt "#30239"
 msgid "TMDB Info"
@@ -755,37 +234,13 @@ msgctxt "#30243"
 msgid "More sources"
 msgstr "Weitere Quellen"
 
-msgctxt "#30244"
-msgid "Add to Playlist"
-msgstr "Zur Abspielliste hinzufügen"
-
 msgctxt "#30251"
 msgid "Choose page"
 msgstr "Seite auswählen"
 
-msgctxt "#30252"
-msgid "Notification"
-msgstr "Benachrichtigung"
-
 msgctxt "#30253"
 msgid "No entry found"
 msgstr "Kein Eintrag gefunden"
-
-msgctxt "#30254"
-msgid "Please check settings"
-msgstr "Einstellungen bitte überprüfen"
-
-msgctxt "#30255"
-msgid "Connection failed (JD or external CNL port support disabled?)"
-msgstr "Verbindung fehlgeschlagen (JD oder externe CNL Port Unterstützung ausgeschaltet?)"
-
-msgctxt "#30256"
-msgid "Link sent"
-msgstr "Link gesendet"
-
-msgctxt "#30258"
-msgid "Error sending link!"
-msgstr "Fehler beim Senden des Links!"
 
 msgctxt "#30259"
 msgid "Error retrieving URL:"
@@ -799,18 +254,6 @@ msgctxt "#30261"
 msgid "Fix: enable Settings > Network > 'Bypass DNS block' - or set a different DNS server in your router (e.g. google 'Fritzbox change DNS')."
 msgstr "Abhilfe: Einstellungen > Netzwerk > 'DNS-Sperre umgehen' einschalten - oder im Router einen anderen DNS-Server eintragen (z.B. nach 'Fritzbox DNS ändern' googeln)."
 
-msgctxt "#30262"
-msgid "[COLOR red]This page requires a free user account. Please register at http://flimmerstube.com and enter your account details in the xStream settings.[/COLOR]"
-msgstr "[COLOR red]Für diese Seite brauchst du ein kostenloses Benutzerkonto: registriere dich unter http://flimmerstube.com und trag deine Kontodaten in den xStream-Einstellungen ein.[/COLOR]"
-
-msgctxt "#30263"
-msgid "[COLOR red]This page requires a free user account. Please register at https://aniworld.to/ and enter your account details in the xStream settings.[/COLOR]"
-msgstr "[COLOR red]Für diese Seite brauchst du ein kostenloses Benutzerkonto: registriere dich unter https://aniworld.to/ und trag deine Kontodaten in den xStream-Einstellungen ein.[/COLOR]"
-
-msgctxt "#30264"
-msgid "[COLOR red]This page requires a free user account. Please register at https://s.to/ and enter your account details in the xStream settings.[/COLOR]"
-msgstr "[COLOR red]Für diese Seite brauchst du ein kostenloses Benutzerkonto: registriere dich unter https://s.to/ und trag deine Kontodaten in den xStream-Einstellungen ein.[/COLOR]"
-
 msgctxt "#30265"
 msgid "xStream Support Info"
 msgstr "xStream Support Info"
@@ -822,42 +265,6 @@ msgstr "Plattform:"
 msgctxt "#30267"
 msgid "Support Info"
 msgstr "Support Info"
-
-msgctxt "#30268"
-msgid "Please select whether you want to perform the ResolveURL [Release] or [Nightly] update.[CR][COLOR green]Release - Version directly from Gujal00's Github.[/COLOR][CR][COLOR orange]Nightly - version with hotfixes from the xStream team.[/COLOR]"
-msgstr "Wähle aus, ob du die ResolveURL [Release]- oder [Nightly]-Aktualisierung durchführen möchtest.[CR][COLOR green]Release - Version direkt von Gujal00's Github.[/COLOR][CR][COLOR orange]Nightly - Version mit Hotfixes vom xStream Team.[/COLOR]"
-
-msgctxt "#30269"
-msgid "The presettings are now complete. Please note that the update manager will overwrite your existing installations, but not your user data & settings. Press [Install] to start the update now or [Cancel] to exit."
-msgstr "Die Voreinstellungen sind abgeschlossen. Der Aktualisierungsmanager überschreibt deine vorhandenen Installationen, nicht aber deine Benutzerdaten und Einstellungen. Drück auf [Installieren], um die Aktualisierung zu starten, oder auf [Abbrechen], um abzubrechen."
-
-msgctxt "#30270"
-msgid "Notifications"
-msgstr "Benachrichtigungen"
-
-msgctxt "#30271"
-msgid "Update Notification"
-msgstr "Benachrichtigung der Aktualisierung"
-
-msgctxt "#30272"
-msgid "Simple"
-msgstr "Einfach"
-
-msgctxt "#30273"
-msgid "Full"
-msgstr "Vollständig"
-
-msgctxt "#30274"
-msgid "View change log after update"
-msgstr "Änderungsprotokoll nach Aktualisierung anzeigen"
-
-msgctxt "#30275"
-msgid "[B][COLOR cyan]xStream[/COLOR] [COLOR white]Changelog[/COLOR][/B]"
-msgstr "[B][COLOR cyan]xStream[/COLOR] [COLOR white]Changelog[/COLOR][/B]"
-
-msgctxt "#30276"
-msgid "Show changelog now"
-msgstr "Änderungsprotokoll jetzt anzeigen"
 
 msgctxt "#30277"
 msgid "Auto Domain Update"
@@ -883,101 +290,9 @@ msgctxt "#30287"
 msgid "Enter movie title"
 msgstr "Filmtitel eingeben"
 
-msgctxt "#30288"
-msgid "Please enter the title of the series."
-msgstr "Bitte den Titel der Serie eingeben."
-
-msgctxt "#30289"
-msgid "Please enter the title of the documentary."
-msgstr "Bitte den Titel der Dokumentation eingeben."
-
 msgctxt "#30291"
 msgid "No API Key entered"
 msgstr "API Schlüssel fehlt"
-
-msgctxt "#30302"
-msgid "Seasons german"
-msgstr "Staffeln Deutsch"
-
-msgctxt "#30303"
-msgid "Seasons english"
-msgstr "Staffeln Englisch"
-
-msgctxt "#30304"
-msgid "Search"
-msgstr "Suche"
-
-msgctxt "#30305"
-msgid "Season %s"
-msgstr "Staffel %s"
-
-msgctxt "#30306"
-msgid "%s to %s second"
-msgstr "%s bis %s Sekunde"
-
-msgctxt "#30307"
-msgid "Play all"
-msgstr "Alle abspielen"
-
-msgctxt "#30308"
-msgid "Waiting time"
-msgstr "Wartezeit"
-
-msgctxt "#30309"
-msgid "Please wait %s seconds"
-msgstr "Bitte warte %s Sekunden"
-
-msgctxt "#30310"
-msgid "Developer Options"
-msgstr "Entwickler Optionen"
-
-msgctxt "#30311"
-msgid "xStream Developer Menu"
-msgstr "xStream Entwickler Menü"
-
-msgctxt "#30312"
-msgid "Enable automatic xStream Dev Update"
-msgstr "Automatisches xStream Dev Update aktivieren"
-
-msgctxt "#30313"
-msgid "Developer ID"
-msgstr "Entwickler ID"
-
-msgctxt "#30314"
-msgid "Developer Username"
-msgstr "Entwickler Benutzername"
-
-msgctxt "#30315"
-msgid "Developer Branch"
-msgstr "Entwickler Zweig"
-
-msgctxt "#30316"
-msgid "Developer Token"
-msgstr "Entwickler Token"
-
-msgctxt "#30317"
-msgid "Please enter the developer ID you received here"
-msgstr "Gib hier die Entwickler-ID ein, die du erhalten hast"
-
-msgctxt "#30318"
-msgid "Please enter the developer name you received here"
-msgstr "Gib hier den Entwickler-Namen ein, den du erhalten hast"
-
-msgctxt "#30319"
-msgid "Please enter the developer branch you received here"
-msgstr "Gib hier den Entwickler-Zweig ein, den du erhalten hast"
-
-msgctxt "#30320"
-msgid "Please enter the developer token you received here"
-msgstr "Gib hier den Entwickler-Token ein, den du erhalten hast"
-
-msgctxt "#30321"
-msgid "[COLOR red]Show warning about handling developer options now![/COLOR]"
-msgstr "[COLOR red]Warnung vor dem Umgang der Entwickler Optionen jetzt anzeigen![/COLOR]"
-
-msgctxt "#30322"
-msgid "[B][COLOR cyan]xStream[/COLOR] [COLOR white]Warning (Developer Options)[/COLOR][/B]"
-msgstr "[B][COLOR cyan]xStream[/COLOR] [COLOR white]Warnhinweis (Entwickler Optionen)[/COLOR][/B]"
 
 msgctxt "#30323"
 msgid "Captcha"
@@ -991,14 +306,6 @@ msgctxt "#30329"
 msgid "Timeout in sec"
 msgstr "Timeout in Sek"
 
-msgctxt "#30402"
-msgid "Countries"
-msgstr "Länder"
-
-msgctxt "#30403"
-msgid "No entry available in the selected language!"
-msgstr "Kein Inhalt in der ausgewählten Sprache verfügbar!"
-
 msgctxt "#30404"
 msgid "Exclude hosters"
 msgstr "Hoster ausschließen"
@@ -1007,21 +314,9 @@ msgctxt "#30405"
 msgid "HTML cache cleared"
 msgstr "HTML Cache geleert"
 
-msgctxt "#30406"
-msgid "Choose xStream Version"
-msgstr "Wähle xStream Version"
-
-msgctxt "#30410"
-msgid "Auto Domain Update"
-msgstr "Auto Domain Update"
-
 msgctxt "#30411"
 msgid " [I](Reboot required!)[/I]"
 msgstr " [I](Neustart erforderlich!)[/I]"
-
-msgctxt "#30412"
-msgid "Video on demand services"
-msgstr "Video on Demand Dienste"
 
 msgctxt "#30413"
 msgid "[B]Device[/B]"
@@ -1030,14 +325,6 @@ msgstr "[B]Gerät[/B]"
 msgctxt "#30414"
 msgid "[B]Plugin[/B]"
 msgstr "[B]Plugin[/B]"
-
-msgctxt "#30415"
-msgid "Update enabled"
-msgstr "Aktualisierung aktiviert"
-
-msgctxt "#30416"
-msgid "Update disabled"
-msgstr "Aktualisierung deaktiviert"
 
 msgctxt "#30417"
 msgid "Bypass DNS block:"
@@ -1055,57 +342,17 @@ msgctxt "#30420"
 msgid "[B]DNS[/B]"
 msgstr "[B]DNS[/B]"
 
-msgctxt "#30421"
-msgid "[B]Repository - Information:[/B]"
-msgstr "[B]Repository - Informationen:[/B]"
-
 msgctxt "#30422"
 msgid "[B]Index pages[/B]"
 msgstr "[B]Indexseiten[/B]"
-
-msgctxt "#30423"
-msgid "Index page"
-msgstr "Indexseite"
-
-msgctxt "#30424"
-msgid "Domain used for the index page"
-msgstr "Verwendete Domain der Indexseite"
-
-msgctxt "#30425"
-msgid "Status of the domain used"
-msgstr "Status der verwendeten Domain"
 
 msgctxt "#30426"
 msgid "Search:"
 msgstr "Suche:"
 
-msgctxt "#30427"
-msgid "Domain works without problems"
-msgstr "Domain funktioniert problemlos"
-
 msgctxt "#30428"
 msgid "Redirect"
 msgstr "Umleitung"
-
-msgctxt "#30429"
-msgid "Domain is currently unavailable"
-msgstr "Domain ist derzeit nicht erreichbar"
-
-msgctxt "#30430"
-msgid "Index page in xStream"
-msgstr "Indexseite in xStream"
-
-msgctxt "#30431"
-msgid "[COLORred][I]Youtube required! Please create API key and enter it here.[/I][/COLOR]"
-msgstr "[COLORred][I]Youtube erforderlich! Bitte API Key erstellen und hier eintragen.[/I][/COLOR]"
-
-msgctxt "#30432"
-msgid "Update enabled"
-msgstr "Aktualisierung aktiviert"
-
-msgctxt "#30433"
-msgid "Update disabled"
-msgstr "Aktualisierung deaktiviert"
 
 msgctxt "#30434"
 msgid "DNS"
@@ -1137,18 +384,6 @@ msgctxt "#30502"
 msgid "Movies"
 msgstr "Filme"
 
-msgctxt "#30503"
-msgid "Movies for Children"
-msgstr "Filme für Kinder"
-
-msgctxt "#30504"
-msgid "Animated Movies"
-msgstr "Animationsfilme"
-
-msgctxt "#30505"
-msgid "Documentaries"
-msgstr "Dokumentationen"
-
 msgctxt "#30506"
 msgid "Genre"
 msgstr "Genre"
@@ -1156,10 +391,6 @@ msgstr "Genre"
 msgctxt "#30507"
 msgid "Categories"
 msgstr "Kategorien"
-
-msgctxt "#30508"
-msgid "Release Year"
-msgstr "Erscheinungsjahr"
 
 msgctxt "#30509"
 msgid "Top Movies"
@@ -1181,18 +412,6 @@ msgctxt "#30513"
 msgid "Episode"
 msgstr "Folge"
 
-msgctxt "#30514"
-msgid "New Series"
-msgstr "Neue Serien"
-
-msgctxt "#30515"
-msgid "New Season"
-msgstr "Neue Staffel"
-
-msgctxt "#30516"
-msgid "New Episodes"
-msgstr "Neue Folgen"
-
 msgctxt "#30518"
 msgid "All Series"
 msgstr "Alle Serien"
@@ -1205,81 +424,9 @@ msgctxt "#30520"
 msgid "Search"
 msgstr "Suche"
 
-msgctxt "#30522"
-msgid "Popular documentaries"
-msgstr "Beliebte Dokumentationen"
-
-msgctxt "#30523"
-msgid "New documentaries"
-msgstr "Neue Dokumentationen"
-
-msgctxt "#30524"
-msgid "Release Year/Country"
-msgstr "Veröffentlichungsjahr/Land"
-
-msgctxt "#30525"
-msgid "Random Movie"
-msgstr "Zufallsfilm"
-
-msgctxt "#30526"
-msgid "Random Serie"
-msgstr "Zufallsserie"
-
-msgctxt "#30527"
-msgid "Directors"
-msgstr "Regisseure"
-
-msgctxt "#30528"
-msgid "Movies Genre"
-msgstr "Film Genre"
-
-msgctxt "#30529"
-msgid "Series Genre"
-msgstr "Serien Genre"
-
 msgctxt "#30530"
 msgid "Cinema movies"
 msgstr "Kinofilme"
-
-msgctxt "#30531"
-msgid "Released"
-msgstr "Veröffentlicht"
-
-msgctxt "#30532"
-msgid " trending"
-msgstr " im Trend"
-
-msgctxt "#30533"
-msgid "Updates"
-msgstr "Updates"
-
-msgctxt "#30534"
-msgid "Requested"
-msgstr "Angefordert"
-
-msgctxt "#30535"
-msgid "Rating"
-msgstr "Bewertung"
-
-msgctxt "#30536"
-msgid "Most votes"
-msgstr "Meiste Stimmen"
-
-msgctxt "#30537"
-msgid "Views"
-msgstr "Ansichten"
-
-msgctxt "#30539"
-msgid "Top 10 films this week"
-msgstr "Top 10 Filme diese Woche"
-
-msgctxt "#30540"
-msgid "Top 10 series this week"
-msgstr "Top 10 Serien diese Woche"
-
-msgctxt "#30541"
-msgid "New Movies"
-msgstr "Neue Filme"
 
 msgctxt "#30542"
 msgid "All Movies"
@@ -1288,42 +435,6 @@ msgstr "Alle Filme"
 msgctxt "#30543"
 msgid "Collections"
 msgstr "Kollektionen"
-
-msgctxt "#30544"
-msgid "Popular with "
-msgstr "Beliebt bei "
-
-msgctxt "#30545"
-msgid "Trending films"
-msgstr "Filme im Trend"
-
-msgctxt "#30546"
-msgid "Trending series"
-msgstr "Serien im Trend"
-
-msgctxt "#30547"
-msgid "Search movies"
-msgstr "Suche Filme"
-
-msgctxt "#30548"
-msgid "Search series"
-msgstr "Suche Serien"
-
-msgctxt "#30549"
-msgid "Recently added movies"
-msgstr "Zuletzt hinzugefügte Filme"
-
-msgctxt "#30550"
-msgid "Trending movies this week"
-msgstr "Filme diese Woche im Trend"
-
-msgctxt "#30551"
-msgid "Movies Genre"
-msgstr "Film Genre"
-
-msgctxt "#30552"
-msgid "Most watched"
-msgstr "Meistgesehen"
 
 msgctxt "#30553"
 msgid "Actors"
@@ -1379,10 +490,6 @@ msgctxt "#30700"
 msgid "Aniworld"
 msgstr ""
 
-msgctxt "#30701"
-msgid "Documentaries"
-msgstr "Dokumentationen"
-
 msgctxt "#30702"
 msgid "FilmPalast"
 msgstr ""
@@ -1399,21 +506,8 @@ msgctxt "#30705"
 msgid "Einschalten"
 msgstr ""
 
-msgctxt "#30707"
-msgid "Topstreamfilm"
-msgstr ""
-
-
-msgctxt "#30709"
-msgid "KKiste"
-msgstr ""
-
 msgctxt "#30710"
 msgid "Megakino"
-msgstr ""
-
-msgctxt "#30711"
-msgid "Movie4k"
 msgstr ""
 
 msgctxt "#30712"
@@ -1432,115 +526,19 @@ msgctxt "#30715"
 msgid "Movie2k"
 msgstr ""
 
-msgctxt "#30716"
-msgid "xCine"
-msgstr ""
-
 msgctxt "#30717"
 msgid "KinoGer"
-msgstr ""
-
-msgctxt "#30719"
-msgid "Kids Tube"
-msgstr ""
-
-msgctxt "#30720"
-msgid "FHD Filme"
-msgstr ""
-
-msgctxt "#30721"
-msgid "StreamCloud"
-msgstr ""
-
-msgctxt "#30722"
-msgid "TestPlugin"
-msgstr ""
-
-msgctxt "#30723"
-msgid "Serien-Stream"
-msgstr ""
-
-msgctxt "#30724"
-msgid "Streamkiste"
 msgstr ""
 
 msgctxt "#30725"
 msgid "Streamcloud"
 msgstr ""
 
-msgctxt "#30726"
-msgid "SerienHD"
-msgstr ""
-
-msgctxt "#30727"
-msgid "API Site"
-msgstr "API Seite"
-
 msgctxt "#30728"
 msgid "Moflix-Stream"
 msgstr ""
 
-msgctxt "#30730"
-msgid "KKiste"
-msgstr ""
-
-msgctxt "#30731"
-msgid "MovieDream"
-msgstr ""
-
 ############### Genre ###############
-
-msgctxt "#30800"
-msgid "Action"
-msgstr "Action"
-
-msgctxt "#30801"
-msgid "Animation"
-msgstr "Animation"
-
-msgctxt "#30802"
-msgid "Horror"
-msgstr "Horror"
-
-msgctxt "#30803"
-msgid "Comedy"
-msgstr "Komödie"
-
-msgctxt "#30804"
-msgid "Romance"
-msgstr "Liebesfilm"
-
-msgctxt "#30805"
-msgid "Music film"
-msgstr "Musikfilm"
-
-msgctxt "#30806"
-msgid "Science fiction"
-msgstr "Science Fiction"
-
-msgctxt "#30807"
-msgid "Adventure"
-msgstr "Abenteuer"
-
-msgctxt "#30808"
-msgid "Cinema film"
-msgstr "Kinofilm"
-
-msgctxt "#30809"
-msgid "War film"
-msgstr "Kriegsfilm"
-
-msgctxt "#30810"
-msgid "Crime"
-msgstr "Krimi"
-
-msgctxt "#30811"
-msgid "Thriller"
-msgstr "Thriller"
-
-msgctxt "#30812"
-msgid "Western"
-msgstr "Western"
 
 msgctxt "#30813"
 msgid "New"
@@ -1554,10 +552,6 @@ msgctxt "#30815"
 msgid "Genres"
 msgstr "Genres"
 
-msgctxt "#30816"
-msgid "All Genres"
-msgstr "Alle Genres"
-
 msgctxt "#30817"
 msgid "Popular Genres"
 msgstr "Beliebte Genres"
@@ -1566,29 +560,13 @@ msgctxt "#30818"
 msgid "Domain Check"
 msgstr "Domain Check"
 
-msgctxt "#30819"
-msgid "Checking all provider domains..."
-msgstr "Überprüfe alle Provider-Domains..."
-
 msgctxt "#30820"
 msgid "Domain check completed!"
 msgstr "Domain Check abgeschlossen!"
 
-msgctxt "#30821"
-msgid "Changelog is empty"
-msgstr "Changelog ist leer"
-
-msgctxt "#30822"
-msgid "No Changelog available"
-msgstr "Kein Changelog verfügbar"
-
 msgctxt "#30823"
 msgid "Not available in your preferred language.[CR]Change language: Settings > Hoster > Preferred language"
 msgstr "Nicht in deiner bevorzugten Sprache verfügbar.[CR]Sprache ändern: Einstellungen > Hoster > Bevorzugte Sprache"
-
-msgctxt "#30824"
-msgid "Clear HTML cache on startup"
-msgstr "HTML Cache beim Start löschen"
 
 msgctxt "#30825"
 msgid "Solving captcha, please wait"
@@ -1598,41 +576,13 @@ msgctxt "#30826"
 msgid "Captcha not solved"
 msgstr "Captcha nicht gelöst"
 
-msgctxt "#30827"
-msgid "2captcha required"
-msgstr "2captcha erforderlich"
-
-msgctxt "#30828"
-msgid "Captcha service not configured"
-msgstr "Captcha-Dienst nicht konfiguriert"
-
 msgctxt "#30829"
 msgid "CloudFlare protection active"
 msgstr "CloudFlare-Schutz aktiv"
 
-msgctxt "#30830"
-msgid "TMDB Browser at first position"
-msgstr "TMDB Browser an erster Position"
-
-msgctxt "#30833"
-msgid "🔍 New year search"
-msgstr "🔍 Neue Jahr-Suche"
-
-msgctxt "#30834"
-msgid "🔍 New actor search"
-msgstr "🔍 Neue Schauspieler-Suche"
-
 msgctxt "#30835"
 msgid "TMDB API Key (optional)"
 msgstr "TMDB API Key (optional)"
-
-msgctxt "#30836"
-msgid "Personal TMDB API Key — uses default keys when empty. Create your own key at themoviedb.org (free)."
-msgstr "Eigener TMDB API Key — bei leer werden die Standard-Keys genutzt. Eigenen Key auf themoviedb.org erstellen (kostenlos)."
-
-msgctxt "#30837"
-msgid "Updates"
-msgstr "Updates"
 
 msgctxt "#30838"
 msgid "AnimeToast"
@@ -1642,49 +592,9 @@ msgctxt "#30839"
 msgid "Settings"
 msgstr "Einstellungen"
 
-msgctxt "#30840"
-msgid "Currently popular"
-msgstr "Derzeit Beliebt"
-
-msgctxt "#30841"
-msgid "Sort by name"
-msgstr "Sortieren nach Name"
-
 msgctxt "#30842"
 msgid "Vavoo TV"
 msgstr "Vavoo TV"
-
-msgctxt "#30843"
-msgid "Enable Vavoo TV"
-msgstr "Vavoo TV aktivieren"
-
-msgctxt "#30844"
-msgid "Shows Vavoo live TV as its own entry at the top of the main menu."
-msgstr "Zeigt Vavoo Live-TV als eigenen Eintrag oben im Hauptmenü."
-
-msgctxt "#30845"
-msgid "Vavoo TV - Server unreachable"
-msgstr "Vavoo TV - Server nicht erreichbar"
-
-msgctxt "#30846"
-msgid "Login server unreachable.\nCheck your connection or try again later."
-msgstr "Anmeldeserver nicht erreichbar.\nPrüfe deine Verbindung oder versuch es später nochmal."
-
-msgctxt "#30847"
-msgid "Vavoo TV - Login failed"
-msgstr "Vavoo TV - Anmeldung fehlgeschlagen"
-
-msgctxt "#30848"
-msgid "Login rejected by the server."
-msgstr "Anmeldung vom Server abgelehnt."
-
-msgctxt "#30849"
-msgid "Vavoo TV - Can't Fetch Countries"
-msgstr "Vavoo TV - Länder nicht abrufbar"
-
-msgctxt "#30850"
-msgid "Country list not loaded.\nTry again in a moment."
-msgstr "Länderliste nicht geladen.\nVersuch es gleich nochmal."
 
 msgctxt "#30851"
 msgid "Vavoo TV - No Channels Found"
@@ -1707,12 +617,8 @@ msgid "Vavoo TV - Stream Failed"
 msgstr "Vavoo TV - Stream fehlgeschlagen"
 
 msgctxt "#30856"
-msgid "Stream won't start.\nPick another stream or refresh the list."
-msgstr "Stream startet nicht.\nAnderen Stream nehmen oder Liste aktualisieren."
-
-msgctxt "#30857"
-msgid "Country list refreshed"
-msgstr "Länderliste aktualisiert"
+msgid "Stream not responding right now.\nPick another one or refresh the list."
+msgstr "Stream antwortet gerade nicht.\nNimm einen anderen oder aktualisiere die Liste."
 
 msgctxt "#30858"
 msgid "%s channels refreshed"
@@ -1721,10 +627,6 @@ msgstr "Sender für %s aktualisiert"
 msgctxt "#30859"
 msgid "Refresh failed - try again"
 msgstr "Aktualisierung fehlgeschlagen - nochmal versuchen"
-
-msgctxt "#30860"
-msgid "Refreshing country list..."
-msgstr "Länderliste wird aktualisiert..."
 
 msgctxt "#30861"
 msgid "Refreshing channels for %s..."
@@ -1738,10 +640,6 @@ msgctxt "#30863"
 msgid "Starting %s..."
 msgstr "%s wird gestartet..."
 
-msgctxt "#30864"
-msgid "Refresh Countries"
-msgstr "Länderliste aktualisieren"
-
 msgctxt "#30865"
 msgid "Refresh Channel List"
 msgstr "Senderliste aktualisieren"
@@ -1753,7 +651,6 @@ msgstr "Stream %s"
 msgctxt "#30867"
 msgid "Stream %s of %s"
 msgstr "Stream %s von %s"
-
 
 msgctxt "#30868"
 msgid "Online"
@@ -1767,15 +664,9 @@ msgctxt "#30870"
 msgid "Offline"
 msgstr "Offline"
 
-msgctxt "#30871"
-msgid "Unchecked"
-msgstr "Ungeprüft"
-
-
 msgctxt "#30872"
 msgid "Timeout"
 msgstr "Timeout"
-
 
 msgctxt "#30873"
 msgid "Filmo"
@@ -1824,3 +715,151 @@ msgstr "Top 10"
 msgctxt "#30884"
 msgid "New Series"
 msgstr "Neue Serien"
+
+msgctxt "#30885"
+msgid "In Theaters"
+msgstr "Im Kino"
+
+msgctxt "#30886"
+msgid "New at Home"
+msgstr "Neu für Daheim"
+
+msgctxt "#30887"
+msgid "Streaming Providers"
+msgstr "Streaming-Anbieter"
+
+msgctxt "#30888"
+msgid "Trending Today"
+msgstr "Heute im Trend"
+
+msgctxt "#30889"
+msgid "Highest Grossing"
+msgstr "Bestes Einspielergebnis"
+
+msgctxt "#30890"
+msgid "Top Rated"
+msgstr "Am besten bewertet"
+
+msgctxt "#30891"
+msgid "Most Votes"
+msgstr "Meiste Bewertungen"
+
+msgctxt "#30892"
+msgid "Ongoing"
+msgstr "Laufend"
+
+msgctxt "#30893"
+msgid "Ended"
+msgstr "Abgeschlossen"
+
+msgctxt "#30894"
+msgid "Actor search"
+msgstr "Schauspieler-Suche"
+
+msgctxt "#30895"
+msgid "Known for"
+msgstr "Bekannt für"
+
+msgctxt "#30896"
+msgid "The YouTube add-on is disabled.[CR]Enable it for trailer playback?"
+msgstr "Das YouTube-Addon ist deaktiviert.[CR]Für die Trailer-Wiedergabe aktivieren?"
+
+msgctxt "#30897"
+msgid "Install YouTube?[CR]Without YouTube only IMDB trailers are available, mostly in the original language.[CR]With YouTube there are more trailers, more often in your language.[CR]This question is asked once per session."
+msgstr "YouTube installieren?[CR]Ohne YouTube gibt es nur IMDB-Trailer, meist in Originalsprache.[CR]Mit YouTube gibt es mehr Trailer, öfter in deiner Sprache.[CR]Diese Frage kommt einmal je Sitzung."
+
+msgctxt "#30898"
+msgid "InputStream Adaptive in the YouTube add-on is disabled.[CR]Trailer playback may fail. Enable it?[CR]This question is asked once per session."
+msgstr "InputStream Adaptive im YouTube-Addon ist aus.[CR]Die Trailer-Wiedergabe kann fehlschlagen. Aktivieren?[CR]Diese Frage kommt einmal je Sitzung."
+
+msgctxt "#30899"
+msgid "No trailer found"
+msgstr "Kein Trailer gefunden"
+
+msgctxt "#30900"
+msgid "Trailer search failed"
+msgstr "Trailer-Suche fehlgeschlagen"
+
+msgctxt "#30901"
+msgid "%s years"
+msgstr "%s Jahre"
+
+msgctxt "#30902"
+msgid "Close"
+msgstr "Schließen"
+
+msgctxt "#30903"
+msgid "Cast"
+msgstr "Besetzung"
+
+msgctxt "#30904"
+msgid "Similar"
+msgstr "Ähnliche"
+
+msgctxt "#30905"
+msgid "Recommended"
+msgstr "Empfohlen"
+
+msgctxt "#30906"
+msgid "Crew"
+msgstr "Stab"
+
+msgctxt "#30907"
+msgid "Appears in"
+msgstr "Spielt in"
+
+msgctxt "#30908"
+msgid "Director"
+msgstr "Regie"
+
+msgctxt "#30909"
+msgid "Writer"
+msgstr "Drehbuch"
+
+msgctxt "#30910"
+msgid "Studio"
+msgstr "Studio"
+
+msgctxt "#30911"
+msgid "Original Title"
+msgstr "Originaltitel"
+
+msgctxt "#30912"
+msgid "Original Language"
+msgstr "Originalsprache"
+
+msgctxt "#30913"
+msgid "Tagline"
+msgstr "Slogan"
+
+msgctxt "#30914"
+msgid "Budget"
+msgstr "Budget"
+
+msgctxt "#30915"
+msgid "Revenue"
+msgstr "Einnahmen"
+
+msgctxt "#30916"
+msgid "Premiere"
+msgstr "Premiere"
+
+msgctxt "#30917"
+msgid "Invalid API Key"
+msgstr "API Schlüssel ungültig"
+
+msgctxt "#30918"
+msgid "No funds left in the account"
+msgstr "Kein Guthaben mehr auf dem Konto"
+
+msgctxt "#30919"
+msgid "IP temporarily banned: too many attempts with a wrong key"
+msgstr "IP vorübergehend gesperrt: zu viele Versuche mit falschem Schlüssel"
+
+msgctxt "#30920"
+msgid "IP not on the account's list of allowed IPs"
+msgstr "IP nicht in der IP-Liste des Kontos freigegeben"
+
+msgctxt "#30921"
+msgid "Hoster not responding right now"
+msgstr "Hoster antwortet gerade nicht"

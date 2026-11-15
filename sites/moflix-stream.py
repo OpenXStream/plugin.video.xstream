@@ -56,8 +56,8 @@ def load():
     params = ParameterHandler()
     params.setParam('page', (1))
     params.setParam('sUrl', URL_VALUE % 'now-playing')
-    cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30500), SITE_IDENTIFIER, 'showEntries'), params)  # Neues
-    # Menue nach filmpalast-Vorbild (Jack 10.09.2026 spaet, „wenn wir schon dabei sind“):
+    cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30500), SITE_IDENTIFIER, 'showEntries'), params)  # Neu auf der Seite
+    # Menue nach filmpalast-Vorbild (so entschieden am 10.09.2026):
     # Filme und Serien als Untermenues mit je zwei Listen, dazwischen die gemischte
     # Rangliste „Top 10“ (Kanal top-10-movies-serien, 20 Eintraege), Suche zuletzt. Die
     # Untermenues halten Liste, Rangliste und Kollektionen bzw. Liste und Neuzugang
@@ -69,7 +69,7 @@ def load():
     # Die Suche erbt die sUrl des letzten Eintrags mit Parametern (gemeinsamer
     # ParameterHandler, Referer haengt daran) — die Top-10-Adresse; sie liegt auf der
     # eigenen Domain, mehr braucht die API nicht. Kollektionen sind Filmreihen und
-    # stehen im Filme-Untermenue (Jack 10.09.2026: „gehoert eigentlich zu Filmen“).
+    # stehen im Filme-Untermenue (so entschieden am 10.09.2026: „gehoert eigentlich zu Filmen“).
     cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30520), SITE_IDENTIFIER, 'showSearch'), params)  # Search
     cGui().setEndOfDirectory()
 
@@ -92,7 +92,7 @@ def showSeriesMenu():
     zuletzt eingestellte Serien) und Alle Serien (Kanal series)."""
     params = ParameterHandler()
     params.setParam('page', 1)
-    # Neuzugang zuerst, dann die Gesamtliste (Jack 10.09.2026: „bei Serien sollten neue
+    # Neuzugang zuerst, dann die Gesamtliste (so entschieden am 10.09.2026: „bei Serien sollten neue
     # Serien oben sein“ — wie Neu vor Filme im Hauptmenue)
     params.setParam('sUrl', URL_VALUE % 'trending-tv')
     cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30884), SITE_IDENTIFIER, 'showEntries'), params)  # Neue Serien
@@ -213,7 +213,7 @@ def showEntries(entryUrl=False, sGui=False):
         params.setParam('entryUrl', URL_HOSTER % sId)
         params.setParam('sThumbnail', i['poster'])
         params.setParam('sName', sName)
-        # Aki: Year an showSeasons weitergeben
+        # Year an showSeasons weitergeben
         if 'release_date' in i and i['release_date']:
             sYearTmp = str(i['release_date'].split('-')[0].strip())
             if sYearTmp: params.setParam('sYear', sYearTmp)
@@ -258,7 +258,7 @@ def showSeasons(sGui=False):
     sThumbnail = params.getValue('sThumbnail')
     sTmdbID = params.getValue('tmdbID') or ''
     sName = params.getValue('sName') or ''
-    sYear = params.getValue('sYear') or ''  # Aki: Year aus Listen-Ebene uebernehmen
+    sYear = params.getValue('sYear') or ''  # Year aus Listen-Ebene uebernehmen
     # Immer beim ersten Block anfangen (ohne &page); die Schleife unten holt den Rest.
     oRequest = cRequestHandler(entryUrl)
     oRequest.addHeaderEntry('Referer', entryUrl)
@@ -268,12 +268,14 @@ def showSeasons(sGui=False):
         return
     sDesc = jSearch['title']['description']
     aResults = jSearch['seasons']['data']
-    # Die Seite liefert Staffeln ABSTEIGEND und in 8er-Bloecken. Wer nur den ersten
-    # Block nimmt und ihn sortiert, zeigt bei laengeren Serien die spaeten Staffeln
-    # zuerst und versteckt Staffel 1 hinter "Naechste Seite" (Stargate: 3-10, dann 1-2).
-    # Deshalb hier ALLE Bloecke holen und danach aufsteigend ausgeben — die Staffelebene
-    # blaettert nicht mehr. Kostet nur bei Serien mit mehr als 8 Staffeln einen
-    # Zusatzabruf (gemessen Supernatural, 15 Staffeln: 0,44 s -> 0,72 s).
+    # Die Seite liefert Staffeln in 8er-Bloecken, die Reihenfolge wechselt: bis 08/2026
+    # ABSTEIGEND (25.08.2026, Stargate: 3-10 im ersten Block, dann 1-2), am 14.10.2026
+    # aufsteigend (Stargate 1-8, dann 9-10; Supernatural und Suits ebenso). Wer nur den
+    # ersten Block nimmt und ihn sortiert, zeigt je nach Lage die spaeten Staffeln zuerst
+    # oder versteckt die letzten hinter "Naechste Seite". Deshalb hier ALLE Bloecke holen
+    # und danach aufsteigend ausgeben — die Staffelebene blaettert nicht mehr. Kostet nur
+    # bei Serien mit mehr als 8 Staffeln einen Zusatzabruf (gemessen Supernatural,
+    # 15 Staffeln: 0,44 s -> 0,72 s).
     iNext = jSearch['seasons'].get('next_page')
     while iNext:
         oRequestNext = cRequestHandler(entryUrl + '&page=' + str(iNext))
@@ -311,7 +313,7 @@ def showSeasons(sGui=False):
         if sTmdbID:
             oGuiElement.addItemValue('tmdb_id', sTmdbID)
         if sYear:
-            oGuiElement.addItemValue('year', sYear)  # Aki: Year auf Staffel setzen
+            oGuiElement.addItemValue('year', sYear)  # Year auf Staffel setzen
         oGuiElement.setThumbnail(sThumbnail)
         if sDesc != '': 
             oGuiElement.setDescription(str(sDesc))
@@ -343,10 +345,11 @@ def showEpisodes(sGui=False):
     iAdded = 0
     for i in aResults:
         if 'primary_video' in i and i['primary_video'] == None: continue # no video available (skip this entry)
-        sName = str(i['name'])
+        sName = str(i['name'] or '')   # ohne Namen kein Trenner im Label (sonst stuende "None" da)
         sEpisodeNr = str(i['episode_number'])
         sThumbnail = str(i['poster'])
-        oGuiElement = cGuiElement(cConfig().getLocalizedString(30513) + ' ' + sEpisodeNr + ' - ' + sName, SITE_IDENTIFIER, 'showHosters')
+        # Eine Form auf allen Sites ("S01E05 - Titel", cParser.episodeLabel)
+        oGuiElement = cGuiElement(cParser.episodeLabel(sSeasonNr, sEpisodeNr, sName), SITE_IDENTIFIER, 'showHosters')
         if 'description' in i and i['description'] != '': oGuiElement.setDescription(i['description'])
         oGuiElement.setEpisode(sEpisodeNr)
         oGuiElement.setSeason(sSeasonNr)
@@ -510,8 +513,7 @@ def showSearchEntries(entryUrl=False, sGui=False, sSearchText=''):
         oGui.setEndOfDirectory()
 
 
-def showHosters(sGui=False):
-    oGui = sGui if sGui else cGui()
+def showHosters():
     hosters = []
     sUrl = ParameterHandler().getValue('entryUrl')
     oRequest = cRequestHandler(sUrl, caching=False)
@@ -523,7 +525,9 @@ def showHosters(sGui=False):
     else:
         aResults = jSearch['episode']['videos']
     if len(aResults) == 0:
-        if not sGui: oGui.showInfo()
+        # Ohne eigene Meldung: hoster.py meldet die leere Hosterliste selbst („Stream // Hoster nicht
+        # verfuegbar", 30141), eine Meldung hier war die zweite Einblendung fuer denselben Klick
+        # (27.10.2026; wie beim Sprach-Hinweis, cGui.showLanguage)
         return
     for i in aResults:
         sQuality = str(i['quality'])

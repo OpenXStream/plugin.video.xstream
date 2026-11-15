@@ -6,10 +6,7 @@
 # Suche: simplecache-API (liefert custom_fields mit Stream)
 # Serien: GraphQL-Backend der Seite — Staffeln und Episoden inklusive Stream-Pfad
 #         (das __NEXT_DATA__ der Serien-Detailseite fuehrt dort keine Quelle)
-# HTML LangzeitCache:
-# Browse (__NEXT_DATA__ ueber _getNextData): 6 Stunden
-# Suche (capi, GET):     normaler HTML-Cache mit der globalen Cache-Dauer
-# GraphQL (Serien, Suche): keiner — POST wird nicht gecacht
+# HTML-Cache: Browse und Suche (GET) ueber den normalen HTML-Cache, GraphQL (POST) wird nie gecacht
 
 
 import json
@@ -63,7 +60,7 @@ def load():
     # Startseite (die Kategorie-Reihen der Seite)
     cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30881), SITE_IDENTIFIER, 'showStart'))  # Startseite
     # Genres (dynamisch)
-    cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30506), SITE_IDENTIFIER, 'showGenres'))  # Genre (Hausstring, seit 2026.09.10 wie alle Sites)
+    cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30506), SITE_IDENTIFIER, 'showGenres'))  # Genre (Hausstring, seit dem 10.09.2026 wie alle Sites)
     # Suche
     cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30520), SITE_IDENTIFIER, 'showSearch'))
     cGui().setEndOfDirectory()
@@ -94,14 +91,14 @@ def showStart():
     oGui.setEndOfDirectory()
 
 
-def _getNextData(sUrl, sGui=False):
-    # Holt das __NEXT_DATA__-JSON einer Netzkino-Seite und gibt das geparste dict zurück (oder None).
+def _getNextData(sUrl, sGui=False, caching=True):
+    # Holt das __NEXT_DATA__-JSON einer Netzkino-Seite und gibt das geparste dict zurück (oder None);
+    # caching=False fuer die Hosterliste (Hoster kommen immer frisch, wie auf jeder Seite — seit dem 05.11.2026 auch hier).
     # URL absichern: Slugs können Nicht-ASCII enthalten (z.B. "Teenie-Komödien-frontpage" mit ö).
     # Der ParameterHandler dekodiert eingehende sUrl via parse_qsl wieder zu rohem ö -> hier am
     # Request-Rand percent-encoden, sonst crasht http.client beim request.encode('ascii').
     sUrl = cParser.urlEncode(sUrl, "%:/?#[]@!$&'()*+,;=~")  # nur Nicht-ASCII kodieren, %XX/Struktur unberührt
-    oRequest = cRequestHandler(sUrl, ignoreErrors=(sGui is not False))
-    oRequest.cacheTime = 60 * 60 * 6  # 6 Stunden
+    oRequest = cRequestHandler(sUrl, caching=caching, ignoreErrors=(sGui is not False))
     sHtmlContent = oRequest.request()
     isMatch, sJson = cParser.parseSingleResult(sHtmlContent, r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>')
     if not isMatch:
@@ -168,12 +165,20 @@ def _getSubcategoryNodes(oNext):
     return []
 
 
+def _artUrl(sUrl):
+    # Bild-Adressen der API tragen den Dateinamen roh, auch mit Leerzeichen ("Scream at the Devil_cover.jpg",
+    # gemessen 26.10.2026) — Kodi laedt eine Adresse mit Leerzeichen nicht (libcurl lehnt sie als fehlerhaft ab),
+    # kodiert kommt das Bild. Wie beim Stream-Pfad unten: reservierte Zeichen und '%' bleiben stehen, eine schon
+    # kodierte Adresse wird also nicht ein zweites Mal kodiert.
+    return cParser.urlEncode(sUrl, safe=":/?#[]@!$&'()*+,;=%~|") if sUrl else sUrl
+
+
 def _imageUrl(oMovie, *keys):
-    # Gibt die masterUrl des ersten vorhandenen Bild-Feldes zurück.
+    # Gibt die masterUrl des ersten vorhandenen Bild-Feldes zurück (kodiert, siehe _artUrl).
     for k in keys:
         img = oMovie.get(k)
         if isinstance(img, dict) and img.get('masterUrl'):
-            return img['masterUrl']
+            return _artUrl(img['masterUrl'])
     return ''
 
 
@@ -442,7 +447,10 @@ def _listEpisodes(oGui, episodes, params):
     sThumbnail = params.getValue('sThumbnail') or ''
     total = len(episodes)
     for e in episodes:
-        oGuiElement = cGuiElement(e['title'], SITE_IDENTIFIER, 'showHosters')
+        # Eine Form auf allen Sites ("S01E01 - <Titel der Seite>", cParser.episodeLabel); Folge 0 heisst
+        # unbekannt (episodeInSeason fehlte) — dann bleibt der Titel der Seite allein
+        sLabel = cParser.episodeLabel(e['season'], e['episode'], e['title']) if e['episode'] else e['title']
+        oGuiElement = cGuiElement(sLabel, SITE_IDENTIFIER, 'showHosters')
         oGuiElement.setMediaType('episode')
         if sThumbnail:
             oGuiElement.setThumbnail(sThumbnail)
@@ -480,7 +488,7 @@ def showHosters():
         return hosters
     # Sonst: Detailseite per Slug laden und pmdUrl ziehen
     if sSlug:
-        oNext = _getNextData(URL_DETAIL % sSlug)
+        oNext = _getNextData(URL_DETAIL % sSlug, caching=False)
         data = _findQuery(oNext, 'MovieDetails') if oNext else None
         if data:
             movie = data.get('movie') or {}
@@ -610,11 +618,11 @@ def _showSearchEntries(entryUrl, sGui=False, sSearchText=False):
             oGuiElement = cGuiElement(sTitle, SITE_IDENTIFIER, 'showHosters')
             oGuiElement.setMediaType('movie')
             if item.get('thumbnail'):
-                oGuiElement.setThumbnail(str(item['thumbnail']))
+                oGuiElement.setThumbnail(_artUrl(str(item['thumbnail'])))
             if item.get('content'):
                 oGuiElement.setDescription(str(item['content']))
             if cf.get('featured_img_all') and cf['featured_img_all'][0]:
-                oGuiElement.setFanart(str(cf['featured_img_all'][0]))
+                oGuiElement.setFanart(_artUrl(str(cf['featured_img_all'][0])))
             if cf.get('Jahr') and cf['Jahr'][0]:
                 oGuiElement.setYear(str(cf['Jahr'][0]))
             if cf.get('Adaptives_Streaming') and cf['Adaptives_Streaming'][0]:
@@ -647,7 +655,7 @@ def _showSearchEntries(entryUrl, sGui=False, sSearchText=False):
             oGuiElement.setMediaType('movie')
             oCover = m.get('coverImage') or {}
             if oCover.get('masterUrl'):
-                oGuiElement.setThumbnail(str(oCover['masterUrl']))
+                oGuiElement.setThumbnail(_artUrl(str(oCover['masterUrl'])))
             if m.get('productionYear'):
                 oGuiElement.setYear(str(m['productionYear']))
             oParams = ParameterHandler()

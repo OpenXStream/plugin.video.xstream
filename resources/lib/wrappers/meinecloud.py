@@ -21,9 +21,10 @@ Eine zentrale Stelle fuer alle Sites die meinecloud-Funktionen importieren
 — beim Hinzufuegen/Entfernen einer Site nur HIER aktualisieren.
 
   sites/hdfilme.py        — Filme Pattern A | Serien MERGE
-  sites/streamcloud.py    — Filme Pattern D | Serien MC-ONLY
-                            (Film/Serie-Erkennung ueber die Marker der
-                            eigenen Detailseite, siehe dort _hasMeinecloudSerial)
+  sites/streamcloud.py    — Filme Pattern B (iframe) | Serien MC-ONLY
+                            (Film oder Serie steht seit dem 03.11.2026 in der
+                            Adresse der Karte, /filme/ bzw. /serie/; die ID der
+                            Serie liest platformImdbId aus der Detailseite)
 
 Pattern-Legende:
   Filme  — Pattern A/B/C/D = unterschiedliche Site-HTML-Strukturen die
@@ -52,7 +53,8 @@ Die Embed-Seiten der Plattform tragen keine Hoster mehr im HTML. Stattdessen:
     1. GET  <base>/movie/<imdb>  bzw.  <base>/serial/<imdb>
        Die Seite liefert im Inline-Skript ein Feld  token: "<b64>.<sig>"
        (Nutzlast base64: type|id|season|episode|ablauf; an Typ und ID
-       gebunden, rund eine halbe Stunde gueltig — deshalb ohne Cache).
+       gebunden, rund eine halbe Stunde gueltig: 28.09.2026 10-28 min,
+       14.10.2026 40 min — deshalb ohne Cache).
        devideosrc.co liefert seine Embed-Seiten aus einem Cache, deren
        Token schon abgelaufen sein kann (28.09.2026 gemessen: Serienseite
        4 min ueber der Zeit, Filmseite 45 s Rest; meinecloud.click frisch
@@ -60,7 +62,9 @@ Die Embed-Seiten der Plattform tragen keine Hoster mehr im HTML. Stattdessen:
        Nutzlast und weicht bei abgelaufenem Token auf den Schwester-Host
        aus (_freshToken) — fuer Filme wie Serien.
     2. POST <base>/api/embed-links  mit JSON {type, id, token}
-       Film   -> {"ok":true,"type":"movie","sources":[{name,url,rank},...]}
+       Film   -> {"ok":true,"type":"movie","sources":[{name,url,rank,...},...]}
+                 (die Quellen-Objekte trugen am 14.10.2026 zusaetzlich id, kind
+                 und embed; der Wrapper liest nur url)
        Serie  -> {"ok":true,"type":"tv","tv":{"seasons":[{"season_number",
                   "episodes":[{"episode_number","title","description",
                   "sources":[{name,url},...]}]}]}}
@@ -98,7 +102,9 @@ Pattern A — Standard:
 Pattern B — 2-Stage iframe:
     Site filtert das Plattform-iframe per isPlatformUrl und gibt die
     iframe-URL DIREKT in expandHosterList([hUrl]) — Laden und Aufloesen
-    macht resolveMeinecloud() zentral. Derzeit ohne Nutzer im Bestand.
+    macht resolveMeinecloud() zentral.
+    Beispiel: sites/streamcloud.py showHosters(), Film-Zweig (ebenso die
+    Reserve-Files fhdfilme und topstreamfilm).
 Pattern C — (URL, Name)-Tupel:
     Site nutzt re.findall mit Tupel-Capture. Resolved URLs haben keinen
     Site-Namen — Hostname als Fallback aus URL extrahieren.
@@ -107,14 +113,17 @@ Pattern D — Multi-Mode konvergent:
     Site hat mehrere Modi (Episode/Movie) die in einer gemeinsamen
     Hoster-Loop konvergieren. Expand-Block direkt nach `if isMatch:`,
     faengt alle Modi ab.
-    Beispiel: sites/streamcloud.py showHosters().
+    Beispiel: aktuell keine Site im Paket (bis 02.11.2026 sites/streamcloud.py
+    showHosters()).
 
 Filter im Resolver:
     - Self-Refs auf die Plattform selbst (interne Links sind keine Streams)
     - Dubletten
 Fehlerwege (alle -> [] mit Logzeile, kein Fenster — Hilfsabruf):
     - keine Antwort, Timeout, 4xx/5xx auf Seite oder API
-    - Seite ohne Token (Seitenaufbau geaendert)
+    - Seite ohne Token (Titel auf der Plattform unbekannt oder Seitenaufbau
+      geaendert — kennt die Plattform eine ID nicht, liefert sie eine leere
+      Player-Seite ohne Token, gemessen 08.10.2026)
     - API meldet ok=false oder liefert keine Quellen
 
 ═══════════════════════════════════════════════════════════════════
@@ -126,10 +135,13 @@ Detail-HTML; die Daten kommen von der Plattform.
 
 Ablauf:
     0. IMDb-ID der Serie aus dem Site-HTML: platformImdbId() — zuerst `var imdb`
-       des Plattform-Snippets (nur wenn dort eine tt-ID steht), sonst das Muster
-       tt + 7 bis 9 Ziffern. Die Plattform fuehrt Titel ohne IMDb-Eintrag unter
-       verlaengerten IDs (normale ID plus Anhang, z.B. tt39397536111); das Muster
-       allein kuerzte sie und die Plattform fand nichts (gemessen 21.09.2026).
+       bzw. `var rawImdb` des Plattform-Snippets (nur wenn dort eine tt-ID steht,
+       auch in String(…)), dann die ID aus der ersten Serien-Adresse der
+       Plattform im HTML (…/serial/<tt>, auch …/custom/serial/<tt>/1/1),
+       sonst das Muster tt + 7 bis 9 Ziffern. Die Plattform fuehrt Titel ohne
+       IMDb-Eintrag unter verlaengerten IDs (normale ID plus Anhang, z.B.
+       tt39397536111); das Muster allein kuerzte sie und die Plattform fand nichts
+       (gemessen 21.09.2026).
     1. Plattform-Host aus dem Site-HTML (_discoverPlatformBase): der erste
        Plattform-Link der Seite (Embed-Snippet: /embed/download, /movie,
        /serial); nennt die Seite keinen, der erste Host aus
@@ -206,6 +218,11 @@ _RE_TOKEN = re.compile(r"token\s*:\s*[\"']([^\"']{16,})[\"']")
 # Erster Plattform-Host im Site-HTML (Embed-Snippet der Seite).
 _RE_PLATFORM_HOST = re.compile(r'https?://([a-z0-9.-]*(?:%s)[a-z0-9.-]*)' % '|'.join(re.escape(t) for t in PLATFORM_TRIGGERS), re.I)
 _RE_IMDB = re.compile(r'tt\d+')
+# tt-ID im Plattform-Snippet der Site, alle Formen (`var imdb` / `var rawImdb`, Wert auch in `String(…)`, siehe platformImdbId).
+_RE_SNIPPET_IMDB = re.compile(r"var (?:imdb|rawImdb) = (?:String\()?'\s*(tt\d+)\s*'")
+# tt-ID aus einer Serien-Adresse der Plattform im Site-HTML (Player-iframe oder Link, …/serial/<tt>…), bis zum
+# Ende der Adresse begrenzt (kein Anfuehrungszeichen, kein Leerzeichen, keine spitze Klammer dazwischen).
+_RE_PLATFORM_SERIAL_IMDB = re.compile(r'(?:%s)[^"\'\s<>]*?/serial/(tt\d+)' % '|'.join(re.escape(t) for t in PLATFORM_TRIGGERS), re.I)
 
 
 def isPlatformUrl(sUrl):
@@ -220,23 +237,71 @@ def isPlatformUrl(sUrl):
     return bool(sUrl) and any(t in sUrl for t in PLATFORM_TRIGGERS)
 
 
+def platformSnippetId(sHtml):
+    """tt-ID aus dem Plattform-Snippet der Seite, '' wenn keins da ist — ohne Rueckfall auf das Muster.
+
+    Die eine Stelle fuer den Snippet-Ausdruck (alle Formen, siehe platformImdbId):
+    platformImdbId holt hier die ID, die Serienerkennung der Reserve-Files
+    topstreamfilm/fhdfilme (bis 02.11.2026 auch streamcloud) fragt hier, ob die Seite
+    eine Plattform-Serie einbettet — Erkennung und Aufloesung lesen so denselben Ausdruck.
+    Vorausbau (07.10.2026): streamcloud, topstreamfilm und fhdfilme fuehren noch die alte
+    Form, hdfilme und kkiste die rawImdb-Form desselben Grundgeruests; mit einem eigenen
+    Ausdruck in der Erkennung haette eine Umstellung jede Plattform-Serie in den gemischten
+    Listen zum Film gemacht (an streamcloud simuliert: 93 von 93 Serienseiten).
+    """
+    m = _RE_SNIPPET_IMDB.search(sHtml or '')
+    return m.group(1) if m else ''
+
+
 def platformImdbId(sHtml):
-    """IMDb-ID fuer den Serienweg aus dem Site-HTML: zuerst `var imdb`, sonst das Muster.
+    """IMDb-ID fuer den Serienweg aus dem Site-HTML: zuerst das Snippet (platformSnippetId), dann die Serien-Adresse
+    der Plattform, sonst das Muster.
 
     Die Site-Files lasen die ID bis 21.09.2026 mit dem Muster tt + 7 bis 9 Ziffern
     (erster Treffer der Seite). Die Plattform fuehrt aber Titel ohne IMDb-Eintrag
     unter einer verlaengerten ID (eine fremde IMDb-Nummer plus Anhang 111/112/113,
-    z.B. tt39397536111); das Muster schnitt sie ab, der Check in
-    resolveMeinecloudSerial fand unter der gekuerzten ID nichts, und die Serie
-    oeffnete leer — gemessen an streamcloud (5 von 6.121 Serien) und hdfilme
-    (1 von 3.912). Das Einbett-Snippet der Plattform, aus dem
-    _discoverMeinecloudBase die Basis-Adresse liest, traegt die volle ID in
-    `var imdb`; die Serienerkennung der Sites liest sie dort ebenfalls —
-    Erkennung und Aufloesung sehen so dieselbe ID.
+    z.B. tt39397536111); das Muster schnitt sie ab, resolveMeinecloudSerial fand
+    unter der gekuerzten ID nichts, und die Serie oeffnete leer — gemessen an
+    streamcloud (5 von 6.121 Serien) und hdfilme (1 von 3.912). Das
+    Einbett-Snippet der Plattform, aus dem _discoverPlatformBase die Basis-Adresse
+    liest, traegt die volle ID; die Serienerkennung der Sites liest sie dort
+    ebenfalls — Erkennung und Aufloesung sehen so dieselbe ID.
 
-    Nur eine tt-ID aus `var imdb` zaehlt: native Serien fuehren dort einen Text
-    (hdfilme 3.316 von 3.912), manche Seiten 'N/A' oder einen Tippfehler wie
-    'tt14226626h' — dann greift wie bisher der erste Treffer des Musters.
+    Nur eine tt-ID im Snippet zaehlt: native Serien fuehrten dort am 21.09.2026
+    einen Text (hdfilme 3.316 von 3.912), manche Seiten 'N/A' oder einen
+    Tippfehler wie 'tt14226626h' — dann greift wie bisher der erste Treffer des
+    Musters.
+
+    Das Snippet gibt es in zwei Formen (gemessen 07.10.2026): streamcloud (bis 02.11.2026),
+    topstreamfilm und fhdfilme fuehren `var imdb = 'tt…'`, hdfilme (seit dem Umbau
+    vom 07.10.2026) und kkiste `var rawImdb = 'tt…'.trim()` — `var imdb` setzt das
+    Skript dort erst daraus zusammen (ohne Anfuehrungszeichen), der Ausdruck fand
+    nichts mehr und das Muster schnitt verlaengerte IDs wieder ab. Bei hdfilme
+    an den 120 neuesten Serien: 116 normale IDs (liefen ueber das Muster weiter),
+    2 verlaengerte (Team no Limits tt39397536111, Club der Reality-Detektive
+    tt11306366111 — beide oeffneten nur mit dem Bestand der Seite: Team no Limits
+    ohne Staffel 1, der Club ohne Folgentitel und Plattform-Hoster), 2 leer; an 104
+    aelteren Serien 100 leer, 4 normal. Reine Ziffern (das Skript setzt dann 'tt'
+    davor) und Text kamen in keiner der 224 vor. Ueber 508 Detailseiten der fuenf
+    Sites aendert die rawImdb-Form nur die verlaengerten IDs.
+
+    Dritte Form (gemessen 26.10.2026): hdfilme setzt den Wert jetzt in String(…),
+    `var rawImdb = String('tt…' || '').trim()`; der Ausdruck nimmt das `String(` mit.
+    Ohne das fand er dort wieder nichts und das Muster kuerzte die verlaengerten IDs
+    erneut — Team no Limits zeigte nur die 5 Folgen der Seite statt Staffel 1 und 2
+    mit 16 Folgen, der Club der Reality-Detektive wieder keine Plattform-Titel und
+    -Hoster. An den 60 neuesten Serien: 58 mit ID (2 verlaengert), 2 leer
+    (`String('' || '')`, wie alle 60 aelteren Stichproben). Die `var imdb`-Sites
+    aendert das nicht.
+
+    Serien-Adresse (gemessen 03.11.2026): streamcloud bettet seit dem Umbau der Seite
+    kein Snippet mehr ein, die ID steht nur noch im Player-iframe der Plattform
+    (…/custom/serial/<tt>/1/1). Das Muster kuerzte dort jede verlaengerte ID — 7 der
+    1.426 Serien, z.B. Team no Limits tt39397536111 → tt393975361; drei gekuerzte IDs
+    fielen sogar zusammen (tt8130758111/112/113 → tt813075811). Unter der gekuerzten ID
+    kennt die Plattform die Serie nicht, sie oeffnete leer. Deshalb zwischen Snippet und
+    Muster die ID aus der ersten Serien-Adresse der Plattform im HTML; Seiten mit
+    Snippet (hdfilme) bleiben beim Snippet.
 
     Args:
         sHtml: Site-HTML der Serien-Detailseite
@@ -247,22 +312,30 @@ def platformImdbId(sHtml):
     """
     if not sHtml:
         return ''
-    m = re.search(r"var imdb = '(tt\d+)'", sHtml)
+    sId = platformSnippetId(sHtml)
+    if sId:
+        return sId
+    m = _RE_PLATFORM_SERIAL_IMDB.search(sHtml)
     if m:
         return m.group(1)
     m = re.search(r'(tt\d{7,9})', sHtml)
     return m.group(1) if m else ''
 
 
-# Hoster-URLs ohne Media-ID. Manche Sites lassen leere Platzhalter im HTML
-# stehen (beobachtet auf hdfilme: 'https://voe.sx/e/', '//mixdrop.co/e/',
-# '//dr0pstream.com/embed-.html'). Die landen sonst als tote, nicht
-# abspielbare Eintraege in der Hoster-Liste. Greift nur wenn nach dem
-# Hoster-Praefix wirklich NICHTS mehr kommt — echte IDs bleiben unberuehrt.
+# Hoster-URLs ohne brauchbare Media-ID — zwei Formen, beide auf hdfilme
+# beobachtet; sie landen sonst als tote, nicht abspielbare Eintraege in der
+# Hoster-Liste. (1) LEERE Platzhalter, nach dem Hoster-Praefix kommt NICHTS
+# (VOE 'https://…/e/', Mixdrop '//…/e/', Dr0pstream '//…/embed-.html');
 # movie|serial sind die meinecloud-eigenen Formen: ein ID-loser Platzhalter
 # ('meinecloud.click/movie/') wuerde sonst abgerufen und der 404 dem Nutzer
-# als Fehlerfenster gezeigt (beobachtet auf einem verwaisten hdfilme-Beitrag).
-EMPTY_ID_PATTERN = re.compile(r'/(?:e|d|f|v|embed|embed-|movie|serial)/?(?:\.html)?$', re.I)
+# als Fehlerfenster gezeigt (verwaister hdfilme-Beitrag). (2) SCHROTT-IDs
+# 'embed-<ein bis zwei Zeichen>.html': jeder Folgenblock von hdfilme traegt
+# einen von der Seite auskommentierten Supervideo-Eintrag, bei mehr als der
+# Haelfte der Folgen mit einer ID wie 's' oder 'S' — ResolveURL nimmt das als
+# Media-ID, der Hoster hat dazu keine Datei. Echte IDs sind dort zwoelfstellig
+# und bleiben; sie sind fuer viele Folgen die einzige Quelle, deshalb werden
+# auskommentierte Bloecke NICHT pauschal verworfen.
+EMPTY_ID_PATTERN = re.compile(r'/(?:e|d|f|v|embed|embed-|movie|serial)/?(?:\.html)?$|/embed-[a-z0-9]{1,2}\.html$', re.I)
 
 
 def _decodeLink(sValue):
@@ -393,7 +466,7 @@ def _freshToken(aBases, sKind, sImdb, referer=''):
             continue
         sToken = _embedToken(sHtml)
         if not sToken:
-            logger.info('wrappers.meinecloud: kein Token auf %s (Seitenaufbau geaendert?)' % sPageUrl)
+            logger.info('wrappers.meinecloud: kein Token auf %s (Titel unbekannt oder Seite umgebaut)' % sPageUrl)
             continue
         if not _tokenFresh(sToken):
             logger.info('wrappers.meinecloud: Token von %s schon abgelaufen (gecachte Seite), naechster Host' % sPageUrl)
@@ -495,7 +568,7 @@ def expandHosterList(aRawUrls, referer=''):
     for sUrl in aRawUrls or []:
         if not sUrl:
             continue
-        # ID-lose Platzhalter sofort verwerfen — VOR dem meinecloud-Zweig:
+        # Platzhalter ohne brauchbare ID sofort verwerfen — VOR dem meinecloud-Zweig:
         # ein leerer mc-Link ('meinecloud.click/movie/') liefe sonst als
         # Netzabruf auf einen sicheren 404 und zeigte dem Nutzer ein
         # Fehlerfenster. Fuer die uebrigen Hoster ist es derselbe Filter,

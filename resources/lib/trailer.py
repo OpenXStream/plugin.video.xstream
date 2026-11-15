@@ -7,26 +7,29 @@
 #   If TMDB cannot resolve: abort (no trailer found).
 #
 # Search: per-language priority blocks (_runTrailerSearch):
-#   Block list = caller languages + EN (if missing) + ANY
+#   Block list = DE (TMDB-Sprache) + EN + ANY — fest, ohne Einstellung (01.11.2026)
 #   FOR EACH block:
 #     KinoCheck API (lang)         — gated: has_yt_player
 #     KinoCheck YT (if DE block)   — gated: has_yt_player + has_own_key
 #     TMDB videos (lang filter)    — gated: has_yt_player
-#     IMDB (if EN block)           — always (direct MP4, no player needed)
-#   YouTube search (per caller language) — gated: has_yt_player + has_own_key
+#     IMDB videoStrip (if DE block) — always (German-marked trailer, direct MP4/HLS)
+#     IMDB primary (if EN block)   — always (direct MP4, no player needed)
+#   YouTube search (DE) — gated: has_yt_player + has_own_key
 #   Give up
 #
 # Play phase:
 #   YouTube addon: PlayMedia — ISA recommended
 #   IMDB: xbmc.Player().play(mp4_url) — Kodi native player
 #
-# Before playing: 3s notification popup (upper-right) showing source + language.
+# Before playing: 5s notification popup (upper-right) showing source + language.
 # Poster URL passed as notification icon (Kodi stretches to square).
 
 import re
 
-from resources.lib.handler.requestHandler import cRequestHandler  # RandomUA()
+from resources.lib.handler.requestHandler import cRequestHandler, _entpacke  # RandomUA(), Entpacken wie im RH
+from resources.lib.handler import browserProfiles
 from resources.lib.logger import logger
+from resources.lib.config import cConfig
 
 KINOCHECK_CHANNEL = 'UCOL10n-as9dXO2qtjjFUQbQ'  # KinoCheck's YouTube channel ID
 
@@ -49,7 +52,9 @@ _API_CHECKSUM_B64 = b'QUl6YVN5RG5sSjBlX0NabExvWm03Q01Obk80MXhJblpnVkZ5T2Jv'
 import base64 as _b64
 _api_checksum = _b64.b64decode(_API_CHECKSUM_B64).decode() if _API_CHECKSUM_B64 else ''
 
-# ── Module-level cached state (persists for Kodi session, resets on restart) ───
+# ── Module-level cached state — lebt nur innerhalb EINES Skriptlaufs (Kodi startet
+#    das Addon je Aufruf in einem frischen Interpreter). Ueber Aufrufe hinweg halten
+#    allein die Window-Properties (_PROP_PREFIX unten). ────
 
 _yt_api_key = None         # YouTube API key: None=unchecked, str=key, ''=no key found
 _yt_api_dead = False       # Set on YT API HTTP 403 — skips all remaining YT API calls
@@ -81,6 +86,13 @@ def _log(msg):
 
 def _configureYouTubeAddon():
     """Konfiguriert das YouTube-Addon nach Enable/Install (wizard aus, ISA an)."""
+    # Nachbau von setup_wizard_enabled(False) des YouTube-Addons plus dessen
+    # Endmarker — Schluessel und Werte aus anxdpanic/plugin.video.youtube
+    # (kodion/settings/abstract_settings.py, constants/const_settings.py; 7.4.4,
+    # Master 8f8f257 vom 09.07.2026, gelesen 14.10.2026): forced_runs ist dort
+    # run_required = 1767970800 (Release 10.01.2026 als Unix-Zeit); liegt der
+    # gespeicherte Wert darunter, erzwingt das Addon den Wizard beim naechsten
+    # Start — hebt das YouTube-Addon run_required an, den Wert hier nachziehen.
     from xbmcaddon import Addon
     yt = Addon('plugin.video.youtube')
     yt.setSetting('kodion.setup_wizard', 'false')
@@ -101,14 +113,7 @@ def _ensureYouTubeAddon():
 
     # 2. Installiert aber deaktiviert? → yesno + JSON-RPC Enable
     if xbmc.getCondVisibility('System.HasAddon(plugin.video.youtube)'):
-        is_de_gui = (xbmc.getLanguage(xbmc.ISO_639_1) == 'de')
-        if is_de_gui:
-            msg = ('Das YouTube-Addon ist deaktiviert.\n'
-                   'Für Trailer-Wiedergabe aktivieren?')
-        else:
-            msg = ('The YouTube add-on is disabled.\n'
-                   'Enable it for trailer playback?')
-        if not xbmcgui.Dialog().yesno('Trailer', msg):
+        if not xbmcgui.Dialog().yesno(cConfig().getLocalizedString(30027), cConfig().getLocalizedString(30896)):
             return False
         import json
         xbmc.executeJSONRPC(json.dumps({
@@ -124,23 +129,12 @@ def _ensureYouTubeAddon():
         return True
 
     # 3. Nicht installiert → Install-Dialog
-    is_de_gui = (xbmc.getLanguage(xbmc.ISO_639_1) == 'de')
-    if is_de_gui:
-        msg = ('YouTube installieren?\n'
-               'Ohne YouTube sind nur IMDB-Trailer verf\u00fcgbar, meist in Originalsprache.\n'
-               'Mit YouTube mehr Trailer und zuverl\u00e4ssiger in Ihrer Sprache.\n'
-               'Diese Frage wird einmal pro Sitzung gestellt.')
-    else:
-        msg = ('Install YouTube?\n'
-               'Without YouTube only IMDB trailers are available, mostly in original language.\n'
-               'With YouTube more trailers and more reliably in your language.\n'
-               'This question is asked once per session.')
-    if not xbmcgui.Dialog().yesno('Trailer', msg):
+    if not xbmcgui.Dialog().yesno(cConfig().getLocalizedString(30027), cConfig().getLocalizedString(30897)):
         return False
     try:
         from xbmc import executebuiltin, sleep
         executebuiltin('InstallAddon(plugin.video.youtube)')
-        executebuiltin('SendClick(11)')
+        executebuiltin('SendClick(11)')  # 11 = Ja-Knopf der Kodi-Rueckfrage zu InstallAddon
         for _i in range(30):
             sleep(1000)
             try:
@@ -155,7 +149,41 @@ def _ensureYouTubeAddon():
 
 
 # ── HTTP helper (eigener Abruf statt cRequestHandler: die API-Abrufe scheitern
-#    still und landen nicht im HTML-Cache) ─────────────────────────────────────
+#    still, landen nicht im HTML-Cache und behalten ihre eigenen Timeouts, und
+#    _fetchJSON braucht fuer die Quota-Erkennung den Rumpf einer 403 — den gibt der
+#    requestHandler nicht heraus). Die Kopfzeilen kommen wie bei jedem Abruf aus dem
+#    Browser-Profil. ──────────────────────────────────────────────────────────────
+
+def _apiRequest(url, data=None, aExtra=()):
+    """urllib-Request mit dem fetch()-Kopfsatz des Browser-Profils (browserProfiles, wie im
+    requestHandler) — bis zum 31.10.2026 gingen hier ein Firefox-UA und sonst nur die nackten
+    urllib-Zeilen raus. Zeilen des Aufrufers (aExtra: Content-Type, Accept, Referer, beim
+    IMDb-Abruf Sec-Fetch-Site) gewinnen wie dort, neue kommen hinten dran; den Referer bildet
+    wie dort das Profil aus dem Wert des Aufrufers. Lesen mit _readBody: das Profil bietet
+    gzip und deflate an."""
+    from urllib.request import Request
+    sUA = cRequestHandler.RandomUA()
+    sReferer = next((v for k, v in aExtra if k.lower() == 'referer'), '')
+    aHeaders = browserProfiles.buildHeaders(sUA, url, sReferer, browserProfiles.MODE_API, True, data is not None)
+    dExtra = dict((k.lower(), v) for k, v in aExtra)
+    if aHeaders:
+        dExtra.pop('referer', None)
+    req = Request(url, data=data)
+    for k, v in aHeaders or [('User-Agent', sUA)]:
+        req.add_header(k, dExtra.pop(k.lower(), v))
+    for k, v in aExtra:
+        if k.lower() in dExtra:
+            req.add_header(k, v)
+    return req
+
+
+def _readBody(resp):
+    """Rumpf einer Antwort oder eines HTTPError, entpackt ueber _entpacke des requestHandlers (urllib
+    entpackt nicht selbst): gzip, deflate in zlib- und roher Form, Unpassendes bleibt roh. Bis zum 02.11.2026
+    eine eigene Kopie, die deflate nur roh kannte — deflate in zlib-Form (RFC 9110) blieb ungelesen und die
+    Quelle still leer (lokal nachgestellt)."""
+    return _entpacke(resp.read(), (resp.headers.get('Content-Encoding') or '').lower(), getattr(resp, 'url', '') or '')
+
 
 def _fetchJSON(url, timeout=10):
     """GET a JSON API URL and return parsed dict. Returns {} on any error.
@@ -163,17 +191,15 @@ def _fetchJSON(url, timeout=10):
     and sets _yt_api_dead flag to skip remaining YouTube API calls."""
     global _yt_api_dead
     import json
-    from urllib.request import Request, urlopen
+    from urllib.request import urlopen
     from urllib.error import HTTPError
     try:
-        req = Request(url)
-        req.add_header('User-Agent', cRequestHandler.RandomUA())
-        resp = urlopen(req, timeout=timeout)
-        return json.loads(resp.read().decode('utf-8'))
+        resp = urlopen(_apiRequest(url), timeout=timeout)
+        return json.loads(_readBody(resp).decode('utf-8'))
     except HTTPError as e:
         if e.code == 403 and 'googleapis.com' in url:
             try:
-                body = json.loads(e.read().decode('utf-8'))
+                body = json.loads(_readBody(e).decode('utf-8'))
                 reason = body.get('error', {}).get('errors', [{}])[0].get('reason', '')
                 if reason in ('quotaExceeded', 'dailyLimitExceeded'):
                     _yt_api_dead = True
@@ -193,28 +219,10 @@ def _fetchJSON(url, timeout=10):
         return {}
 
 
-def _fetchHTML(url, timeout=10):
-    """GET a URL and return raw HTML string. Returns '' on any error."""
-    from urllib.request import Request, urlopen
-    from urllib.error import HTTPError
-    try:
-        req = Request(url)
-        req.add_header('User-Agent', cRequestHandler.RandomUA())
-        req.add_header('Accept-Language', 'en-US,en;q=0.9')
-        resp = urlopen(req, timeout=timeout)
-        return resp.read().decode('utf-8', errors='replace')
-    except HTTPError as e:
-        _log('_fetchHTML HTTP %s url=%s' % (e.code, url[:120]))
-        return ''
-    except Exception as e:
-        _log('_fetchHTML error: %s url=%s' % (e, url[:120]))
-        return ''
-
-
 # ── YouTube helpers ───────────────────────────────────────────────────────────
 
 def _getYouTubeApiKey():
-    """Return YouTube Data API key. Cached at module level (reset on Kodi restart)."""
+    """Return YouTube Data API key. Cached at module level (for the current script run)."""
     global _yt_api_key
     if _yt_api_key is not None:
         return _yt_api_key
@@ -228,8 +236,11 @@ def _getYouTubeApiKey():
         key = data.get('keys', {}).get('user', {}).get('api_key', '')
     except Exception:
         pass
+    # Im Log nur WELCHER Schluessel, kein Zeichen daraus (wie _keyName in tmdb/api.py): bis zum 02.11.2026 standen
+    # hier die ersten 8 Zeichen — beim eigenen Schluessel aus dem YouTube-Addon ein Stueck davon (Logs gehen im
+    # Support an Fremde)
     if key:
-        _log('YT-apikey: addon key (%s...)' % key[:8])
+        _log('YT-apikey: aus dem YouTube-Addon')
         _yt_api_key = key
         return key
     # 2. Fallback
@@ -238,7 +249,7 @@ def _getYouTubeApiKey():
             import base64
             key = base64.b64decode(_API_CHECKSUM_B64).decode()
             if key:
-                _log('YT-apikey: fallback (%s...)' % key[:8])
+                _log('YT-apikey: eingebauter Schluessel')
                 _yt_api_key = key
                 return key
         except Exception:
@@ -301,7 +312,7 @@ def _fetchVideoDetails(keys, api_key=None):
                     + int(m.group(3) or 0)) if m else 0
             age_restricted = cd.get('contentRating', {}).get('ytRating') == 'ytAgeRestricted'
             unlisted = st.get('privacyStatus') != 'public'
-            cam_rip = sn.get('categoryId') == '22'
+            cam_rip = sn.get('categoryId') == '22'  # YouTube-Kategorie 22 = 'People & Blogs' (videoCategories der Data API): kein Studio-Kanal, als Kino-Mitschnitt gewertet
             views = int(stats.get('viewCount', 0))
             info = {'secs': secs, 'age_restricted': age_restricted,
                     'unlisted': unlisted, 'cam_rip': cam_rip, 'views': views}
@@ -320,13 +331,11 @@ def _oembedFetch(video_id):
     Returns dict with title/author_name on success, None if deleted/private/unavailable."""
     try:
         import json
-        from urllib.request import Request, urlopen
+        from urllib.request import urlopen
         from urllib.error import HTTPError
         url = 'https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=%s&format=json' % video_id
-        req = Request(url)
-        req.add_header('User-Agent', cRequestHandler.RandomUA())
-        resp = urlopen(req, timeout=5)
-        return json.loads(resp.read().decode('utf-8'))
+        resp = urlopen(_apiRequest(url), timeout=5)
+        return json.loads(_readBody(resp).decode('utf-8'))
     except HTTPError as e:
         if e.code in (404, 401, 403):
             _log('oEmbed %s: HTTP %d (unavailable)' % (video_id, e.code))
@@ -334,12 +343,6 @@ def _oembedFetch(video_id):
         return {}  # other HTTP errors — assume available but no data
     except Exception:
         return {}  # network error — assume available but no data
-
-
-def _videoExists(video_id):
-    """Check if a YouTube video exists using the free oEmbed endpoint (no API key, no quota).
-    Returns True if video is available, False if deleted/private/unavailable."""
-    return _oembedFetch(video_id) is not None
 
 
 def _filterByDuration(hits, minS=60, maxS=360, api_key=None):
@@ -414,7 +417,7 @@ def _yearConflict(vtitle, year):
     if not year:
         return False
     decoded = _htmlDecode(vtitle)
-    # Find all 4-digit years in range 1920-2039
+    # Find all 4-digit years in range 1900-2099
     found = re.findall(r'(?<!\d)((?:19|20)\d{2})(?!\d)', decoded)
     if not found:
         return False  # no year in title — can't tell, allow it
@@ -483,7 +486,7 @@ _BAD_CHANNELS = [
 
 
 def _oembedSanityCheck(video_id, title, year=''):
-    """Last safety check before playing a YouTube search result (steps 4/5).
+    """Last safety check before playing a YouTube search result (global search).
     Single oEmbed call (free, 0 quota) on the #1 pick. Checks:
     1. Video still exists (not deleted/private)
     2. Full title (not truncated) has no year conflict
@@ -557,7 +560,7 @@ def _searchKinoCheckAPI(tmdb_id, mediatype='movie', language='de'):
         videos  = data.get('videos', [])
         if not trailer and not videos:
             _log('KinoCheck-API: no trailer for tmdb_id=%s' % tmdb_id)
-            return [], True   # api_ok=True — they don't have it, skip YT fallback
+            return [], True   # api_ok=True — API answered, they just have no trailer (callers only log the flag)
         hits = []
         # Primary trailer first
         if trailer and trailer.get('youtube_video_id'):
@@ -567,10 +570,15 @@ def _searchKinoCheckAPI(tmdb_id, mediatype='movie', language='de'):
         for v in videos:
             vid = v.get('youtube_video_id', '')
             if vid and vid not in [h['key'] for h in hits]:
-                cat = v.get('categories', '')
-                if cat in ('Trailer', 'Teaser'):
+                # categories kommt als Liste ('Trailer', 'Teaser Trailer', 'Trailer'+'Clip'
+                # ...; gemessen 14.10.2026 an 20 Titeln) — bis dahin wurde sie wie ein
+                # String verglichen und kein Zusatzvideo je uebernommen
+                cats = v.get('categories') or []
+                if isinstance(cats, str):
+                    cats = [cats]
+                if any(c in ('Trailer', 'Teaser', 'Teaser Trailer') for c in cats):
                     hits.append({'name': v.get('title', ''), 'key': vid, 'language': v.get('language', language)})
-                    _log('KinoCheck-API video: %s %r cat=%s lang=%s' % (vid, v.get('title', '')[:60], cat, v.get('language', language)))
+                    _log('KinoCheck-API video: %s %r cat=%s lang=%s' % (vid, v.get('title', '')[:60], '/'.join(cats), v.get('language', language)))
         return hits, True
     except Exception as e:
         _log('KinoCheck-API exception: %s' % e)
@@ -579,7 +587,7 @@ def _searchKinoCheckAPI(tmdb_id, mediatype='movie', language='de'):
 
 def _searchKinoCheck(title, year):
     """Search KinoCheck YouTube channel for a German trailer.
-    Requires working YouTube API key. Gated by _yt_api_dead flag.
+    Requires the user's own YouTube API key (search.list = 100 units). Gated by _yt_api_dead flag.
     Year-matched results bubble to the top. Returns list of {name, key}."""
     try:
         if _yt_api_dead:
@@ -704,11 +712,19 @@ _IMDB_GRAPHQL_URL = 'https://caching.graphql.imdb.com/'
 # PFLICHT-Header: IMDB beantwortet die GraphQL-API seit Ende Juli 2026 nur noch MIT
 # Referer, sonst HTTP 403. Ein Origin-Header allein reicht NICHT (ebenfalls 403).
 _IMDB_REFERER = 'https://www.imdb.com/'
+# Zeilen beider GraphQL-Abrufe. Sec-Fetch-Site same-site: die Seite www.imdb.com fragt die Schwester-Subdomain
+# caching.graphql.imdb.com — Firefox schickt dafuer same-site (Mitschnitt Firefox 159 de 01.11.2026, fetch() GET und
+# POST JSON an eine Schwester-Subdomain). Das Profil kennt kein same-site (dafuer braeuchte es die Public Suffix List,
+# die Kodis Python nicht hat), deshalb setzt es dieser einzige bekannte Fall selbst.
+_IMDB_EXTRA = (('Content-Type', 'application/json'), ('Accept', 'application/json'), ('Referer', _IMDB_REFERER),
+               ('Sec-Fetch-Site', 'same-site'))
 # Minimal GraphQL query: fetches primary video + CloudFront-signed playback URLs (~3 KB response)
 _IMDB_GRAPHQL_QUERY = '{"query":"query($id:ID!){title(id:$id){primaryVideos(first:1){edges{node{id name{value}playbackURLs{mimeType url videoDefinition}}}}}}","variables":{"id":"%s"}}'
 
-# videoStrip: full video list (NOT just the primary). IMDB exposes no per-video
-# language field, so it gets parsed from the video name downstream.
+# videoStrip: full video list (NOT just the primary). Die Sprache liest der Code
+# aus dem Videonamen (Marker unten). IMDB fuehrt am Video zwar ein Feld
+# primaryLanguage (ISO-Code; gemessen 14.10.2026: 'de' am "(German Trailer)"
+# von River, 'en' an allen uebrigen), der Code fragt es bisher nicht ab.
 _IMDB_VIDEOSTRIP_QUERY = '{"query":"query($id:ID!){title(id:$id){videoStrip(first:40){edges{node{id name{value}contentType{displayName{value}}playbackURLs{mimeType url videoDefinition}}}}}}","variables":{"id":"%s"}}'
 # Markers IMDB uses in localized German trailer names, e.g. "Season 1 (German Trailer)".
 _DE_TRAILER_MARKERS = ('german', 'deutsch')
@@ -749,17 +765,13 @@ def _searchIMDB(imdb_id):
             del _imdb_cache[imdb_id]
     # GraphQL query for primary video + playback URLs
     _log('IMDB GraphQL: %s' % imdb_id)
-    from urllib.request import Request, urlopen
+    from urllib.request import urlopen
     from urllib.error import HTTPError
     try:
         body = (_IMDB_GRAPHQL_QUERY % imdb_id).encode('utf-8')
-        req = Request(_IMDB_GRAPHQL_URL, data=body, method='POST')
-        req.add_header('Content-Type', 'application/json')
-        req.add_header('Accept', 'application/json')
-        req.add_header('User-Agent', cRequestHandler.RandomUA())
-        req.add_header('Referer', _IMDB_REFERER)
+        req = _apiRequest(_IMDB_GRAPHQL_URL, body, _IMDB_EXTRA)
         resp = urlopen(req, timeout=5)
-        data = json.loads(resp.read().decode('utf-8'))
+        data = json.loads(_readBody(resp).decode('utf-8'))
     except HTTPError as e:
         _log('IMDB GraphQL HTTP %s' % e.code)
         return ('', '')
@@ -793,7 +805,8 @@ def _searchIMDB(imdb_id):
 
 def _searchIMDBVideoStrip(imdb_id, lang='de'):
     """IMDB videoStrip lookup for a trailer in a given language.
-    IMDB has no per-video language field, so it is parsed from the video name
+    The language is parsed from the video name (IMDB's per-video field
+    primaryLanguage is not queried, see _IMDB_VIDEOSTRIP_QUERY above)
     (e.g. 'River: Season 1 (German Trailer)'): lang='de' -> name MUST carry a
     German marker; lang='en' (or other) -> name must NOT (the original/English cut, the
     DE-dubbed one is left to the DE block). Direct MP4/HLS playback, no YouTube needed.
@@ -803,17 +816,13 @@ def _searchIMDBVideoStrip(imdb_id, lang='de'):
     if not imdb_id:
         return ('', '', '')
     _log('IMDB videoStrip: %s lang=%s' % (imdb_id, lang))
-    from urllib.request import Request, urlopen
+    from urllib.request import urlopen
     from urllib.error import HTTPError
     try:
         body = (_IMDB_VIDEOSTRIP_QUERY % imdb_id).encode('utf-8')
-        req = Request(_IMDB_GRAPHQL_URL, data=body, method='POST')
-        req.add_header('Content-Type', 'application/json')
-        req.add_header('Accept', 'application/json')
-        req.add_header('User-Agent', cRequestHandler.RandomUA())
-        req.add_header('Referer', _IMDB_REFERER)
+        req = _apiRequest(_IMDB_GRAPHQL_URL, body, _IMDB_EXTRA)
         resp = urlopen(req, timeout=5)
-        data = json.loads(resp.read().decode('utf-8'))
+        data = json.loads(_readBody(resp).decode('utf-8'))
     except HTTPError as e:
         _log('IMDB videoStrip HTTP %s' % e.code)
         return ('', '', '')
@@ -884,6 +893,10 @@ def _play(video_id, step, source, vtype, lang, poster, search_title):
 
 class _TrailerPlayer(object):
     """Kodi player wrapper for direct MP4/HLS (IMDB). Monitors fullscreen, stops on back."""
+    # Die Player-Exemplare bleiben bis zum Skriptende erhalten — Grund siehe
+    # cPlayer._players in resources/lib/player.py (Kodis neue SWIG-Anbindung
+    # gibt beim Freigeben die Klasse samt Modul nicht mehr frei).
+    _players = []
     def __init__(self):
         import xbmc as _xbmc
         class _P(_xbmc.Player):
@@ -892,6 +905,7 @@ class _TrailerPlayer(object):
             def onPlayBackEnded(s): s.done = True
             def onPlayBackError(s): s.done = True
         self._p = _P()
+        _TrailerPlayer._players.append(self._p)
         self._mon = _xbmc.Monitor()
         self._xbmc = _xbmc
     def play(self, url):  self._p.play(url)
@@ -941,12 +955,12 @@ def _runTrailerSearch(tmdb_id, mediatype, title, en_title, year, poster,
                       tmdb_videos):
     """Per-language priority block search.
 
-    languages:   list of 1-3 ISO codes, e.g. ['de'] or ['ja', 'de', 'en']
+    languages:   Sprachen der benannten Bloecke in Reihenfolge, von playTrailer fest ['de']
     tmdb_videos: single pre-fetched TMDB /videos response (all languages)
 
     Block list = languages + EN (if missing) + ANY.
-    Per block: KC API -> KC YT (if DE) -> TMDB -> IMDB (if EN).
-    After all blocks: YouTube search per caller language, then give up.
+    Per block: KC API -> KC YT (if DE) -> TMDB -> IMDB videoStrip (if DE) / IMDB primary (if EN).
+    After all blocks: YouTube search per language in `languages`, then give up.
 
     Returns dict on success: {'found_lang': 'DE', 'source': 'IMDB'|'KinoCheck'|...}
     Returns None on give-up (no trailer found).
@@ -1008,7 +1022,7 @@ def _runTrailerSearch(tmdb_id, mediatype, title, en_title, year, poster,
                           'DE', poster, lang_title)
                     return {'found_lang': 'DE', 'source': 'KinoCheck'}
 
-            # TMDB videos: filter pre-fetched results by language (0 API calls)
+            # TMDB videos: filter pre-fetched results by language (0 TMDB calls; the age check costs 1 YT unit)
             step += 1
             _log('--- [%s] TMDB videos ---' % lang_label)
             if is_any:
@@ -1048,7 +1062,8 @@ def _runTrailerSearch(tmdb_id, mediatype, title, en_title, year, poster,
                 _playDirect(imdb_url, step, 'IMDB', 'Trailer', '', poster, play_title)
                 return {'found_lang': 'EN', 'source': 'IMDB'}
 
-    # YouTube global search (last resort, expensive: 100-201 units per language)
+    # YouTube global search (last resort, expensive: 101 units per language —
+    # search.list 100 + videos.list 1; a cache hit costs 0-1)
     if has_yt_player and has_own_key:
         user_key = _getUserKey()  # search uses user's own key (not built-in)
         for yt_lang in languages:
@@ -1071,7 +1086,7 @@ def _runTrailerSearch(tmdb_id, mediatype, title, en_title, year, poster,
 
 # ── Entry point ──────────────────────────────────────────────────────────────
 
-def playTrailer(tmdb_id, mediatype='movie', title='', year='', poster='', pref_lang='de'):
+def playTrailer(tmdb_id, mediatype='movie', title='', year='', poster=''):
     """Trailer wrapper — detects capabilities, pre-fetches TMDB data,
     then calls _runTrailerSearch().
 
@@ -1081,8 +1096,9 @@ def playTrailer(tmdb_id, mediatype='movie', title='', year='', poster='', pref_l
         title:     display title (for YouTube fallback searches)
         year:      release year string
         poster:    poster image URL (shown as notification icon)
-        pref_lang: preferred trailer language code ('de', 'en', 'fr', ...)
-                   Kontextmenue uebergibt prefLanguage, TMDB-Dialog uebergibt tmdb_lang.
+
+    Sprache fuer Kontextmenue und TMDB-Dialog gleich: zuerst Deutsch, dann Englisch, dann was
+    TMDB sonst fuehrt (_runTrailerSearch), ohne Einstellung (so entschieden am 01.11.2026).
     """
     import xbmc, xbmcgui
     from resources.lib.tmdb.api import cTMDB
@@ -1093,23 +1109,12 @@ def playTrailer(tmdb_id, mediatype='movie', title='', year='', poster='', pref_l
     url_type  = 'movie' if mediatype == 'movie' else 'tv'
     title_key = 'title' if mediatype == 'movie' else 'name'
 
-    # ── Build language list ─────────────────────────────────────────────
-    # 3 settings sources merged, deduplicated, narrowest first
-    try:
-        from resources.lib.config import cConfig
-        _tmdb_lang = cConfig().getSetting('tmdb_lang') or 'de'
-        _pref_raw = cConfig().getSetting('prefLanguage') or '0'
-        _kodi_lang = xbmc.getLanguage(xbmc.ISO_639_1) or 'de'
-        _pref_map = {'0': _kodi_lang, '1': 'de', '2': 'en', '3': 'ja'}
-        _xstream_pref = _pref_map.get(_pref_raw, _kodi_lang)
-        languages = []
-        for lang in [pref_lang, _tmdb_lang, _xstream_pref, _kodi_lang]:
-            if lang and lang not in languages:
-                languages.append(lang)
-        _log('Languages: pref=%s tmdb=%s xstream=%s kodi=%s -> %s' % (
-            pref_lang, _tmdb_lang, _xstream_pref, _kodi_lang, languages))
-    except Exception:
-        languages = [pref_lang or 'de']
+    # ── Sprachen ────────────────────────────────────────────────────────
+    # Fest die TMDB-Sprache (Deutsch); Englisch und den Block "alle uebrigen" haengt
+    # _runTrailerSearch an. Bis zum 01.11.2026 kamen die bevorzugte Sprache der Hoster-Einstellungen
+    # (bei "Alle Sprachen" Kodis Sprache) und Kodis Sprache dazu — die Einstellung gehoert den Hostern.
+    languages = [cTMDB.TMDB_LANGUAGE]
+    _log('Languages: %s' % languages)
 
     # ── Phase 0: resolve TMDB ID from title search ──────────────────────
     if not tmdb_id:
@@ -1129,9 +1134,8 @@ def playTrailer(tmdb_id, mediatype='movie', title='', year='', poster='', pref_l
                 _log('Phase 0: search failed: %s' % e)
         if not tmdb_id:
             _log('Phase 0: could not resolve TMDB ID, aborting')
-            is_de = (xbmc.getLanguage(xbmc.ISO_639_1) == 'de')
             xbmcgui.Dialog().notification(
-                'Trailer', 'Kein Trailer gefunden' if is_de else 'No trailer found',
+                cConfig().getLocalizedString(30027), cConfig().getLocalizedString(30899),
                 xbmcgui.NOTIFICATION_WARNING, 5000,
             )
             return
@@ -1164,16 +1168,7 @@ def playTrailer(tmdb_id, mediatype='movie', title='', year='', poster='', pref_l
             if yt.getSetting('kodion.video.quality.isa') != 'true':
                 if not _win.getProperty(_ISA_WARNED):
                     _win.setProperty(_ISA_WARNED, '1')
-                    is_de_gui = (xbmc.getLanguage(xbmc.ISO_639_1) == 'de')
-                    if is_de_gui:
-                        isa_msg = ('"InputStream Adaptive" im YouTube Add-on ist aus.\n'
-                                   'Trailer-Wiedergabe kann fehlschlagen. Aktivieren?\n'
-                                   'Diese Frage wird einmal pro Sitzung gestellt.')
-                    else:
-                        isa_msg = ('"InputStream Adaptive" in the YouTube add-on is disabled.\n'
-                                   'Trailer playback may fail. Enable it?\n'
-                                   'This question is asked once per session.')
-                    if xbmcgui.Dialog().yesno('Trailer', isa_msg):
+                    if xbmcgui.Dialog().yesno(cConfig().getLocalizedString(30027), cConfig().getLocalizedString(30898)):
                         yt.setSetting('kodion.video.quality.isa', 'true')
                         _log('ISA enabled via pre-flight check')
         except Exception:
@@ -1209,77 +1204,7 @@ def playTrailer(tmdb_id, mediatype='movie', title='', year='', poster='', pref_l
 
     # ── Post-search handling ─────────────────────────────────────────
     if not result:
-        is_de = (xbmc.getLanguage(xbmc.ISO_639_1) or 'de') == 'de'
-        no_hit = 'Kein Trailer gefunden' if is_de else 'No trailer found'
         xbmcgui.Dialog().notification(
-                'Trailer', no_hit,
+                cConfig().getLocalizedString(30027), cConfig().getLocalizedString(30899),
                 xbmcgui.NOTIFICATION_WARNING, 5000,
             )
-
-
-# ── Quick trailer existence check (for TMDB info dialog button) ──────────
-
-def hasTrailer(tmdb_id, imdb_id='', mediatype='movie'):
-    """Quick async check if a trailer exists via KinoCheck, TMDB, or IMDB.
-    Runs available checks in parallel, returns True on first hit.
-    Respects player gating: KinoCheck/TMDB need a YT player, IMDB always works.
-    Used by tmdb/info.py to decide whether to show the trailer button."""
-    import xbmc
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    if mediatype == 'tvshow':
-        mediatype = 'tv'
-    url_type = 'movie' if mediatype == 'movie' else 'tv'
-    _log('hasTrailer: tmdb_id=%s imdb_id=%s mediatype=%s' % (tmdb_id, imdb_id, mediatype))
-
-    # Detect YT player capability (same logic as playTrailer)
-    has_yt_addon = xbmc.getCondVisibility('System.AddonIsEnabled(plugin.video.youtube)')
-    has_yt_player = has_yt_addon
-
-    def _ck():
-        try:
-            hits, _ = _searchKinoCheckAPI(tmdb_id, mediatype)
-            return bool(hits)
-        except Exception:
-            return False
-
-    def _tmdb():
-        try:
-            from resources.lib.tmdb.api import cTMDB
-            data = cTMDB().getUrl('%s/%s/videos' % (url_type, tmdb_id))
-            return bool(data and data.get('results'))
-        except Exception:
-            return False
-
-    def _imdb():
-        try:
-            url, _ = _searchIMDB(imdb_id)
-            return bool(url)
-        except Exception:
-            return False
-
-    # Build task list respecting gating
-    tasks = []
-    if has_yt_player:
-        tasks.append(('KinoCheck', _ck))
-        tasks.append(('TMDB', _tmdb))
-    # IMDB always available (direct MP4, no player needed)
-    if imdb_id:
-        tasks.append(('IMDB', _imdb))
-
-    if not tasks:
-        _log('hasTrailer: no checks to run (no YT player, no IMDB ID)')
-        return False
-
-    with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
-        futures = {pool.submit(fn): name for name, fn in tasks}
-        for future in as_completed(futures):
-            try:
-                if future.result():
-                    _log('hasTrailer: %s has trailer' % futures[future])
-                    return True
-            except Exception:
-                pass
-
-    _log('hasTrailer: no trailer found')
-    return False

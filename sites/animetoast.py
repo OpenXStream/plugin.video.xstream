@@ -91,7 +91,8 @@ _RE_AZ = re.compile(
     # Der Pfad darf neben Kleinbuchstaben/Ziffern/Bindestrich auch '%' und '_' tragen:
     # Titel mit Sonderzeichen stehen URL-kodiert in der Adresse ("C³" wird zu "c%c2%b3",
     # ebenso ∞ ♥ ★ ½ Ψ), und ein Titel fuehrt einen Unterstrich ("D_Cide Traumerei").
-    # Ohne die beiden Zeichen fielen sie stumm aus dem Index — 24 im Sub-, 5 im Dub-Index.
+    # Ohne die beiden Zeichen fielen sie stumm aus dem Index — beim Bau 24 im Sub-,
+    # 5 im Dub-Index, am 14.10.2026 26 und 6.
     r'<li>\s*<a\s+href="(https?://[^/"]*%s/[a-z0-9][a-z0-9%%_-]+/)">\s*([^<]+?)\s*</a>' % _BASE_RE)
 # A-Z-Index: die Seite gliedert ihn selbst in Abschnitte und beschriftet sie
 # (0-9, A ... Z, #). Wir uebernehmen Gliederung UND Beschriftung von dort, statt
@@ -115,7 +116,9 @@ _RE_TAB = re.compile(r'<a\s+data-toggle="tab"\s+href="#multi_link_tab(\d+)">\s*(
 _RE_BTN = re.compile(r'<a\s+class="multilink-btn[^"]*"\s*href="([^"]+)"[^>]*>(.*?)</a>', re.DOTALL)
 # ?link=N aus href
 _RE_LINKNUM = re.compile(r'[?&]link=(\d+)')
-# Player-Embed: echte Hoster-URL (Voe als <a href>, PlayN/Dood/Mp4 als <iframe src>)
+# Player-Embed: echte Hoster-URL als <a href> oder <iframe src>. Beide Formen kommen vor,
+# auch beim selben Hoster (Voe als Anker UND als iframe, PlayN/Mp4Upload/FMoon als
+# iframe; gemessen 14.10.2026)
 _RE_EMBED = re.compile(r'id="player-embed"[^>]*>\s*(?:<a\s+href|<iframe[^>]*?\ssrc)="([^"]+)"')
 # Tab-Pane-Splitter
 _RE_TABSPLIT = re.compile(r'id="multi_link_tab(\d+)"')
@@ -155,7 +158,7 @@ def _hostOf(sUrl):
 
 
 def _hosterName(sUrl):
-    # Anzeigename aus der Domain (voe.sx -> "Voe"). Nur kosmetisch: aufgeloest wird
+    # Anzeigename aus dem ersten Teil der Domain ("Voe"). Nur kosmetisch: aufgeloest wird
     # ueber die Adresse, und der Blocked-Check laeuft ueber den Host (_hostOf), nicht
     # ueber diesen Namensfetzen — als Teilstring rutschten sonst Zufallstreffer durch.
     host = _hostOf(sUrl)
@@ -164,9 +167,12 @@ def _hosterName(sUrl):
 
 
 def _normHoster(s):
-    # Hoster-Namen vergleichbar machen: "Voe"/"VOE"/"Voe.sx" -> "voe". Noetig, weil
-    # die Tab-Reihenfolge auf Serie und Arc abweicht -> Rueckfall in _arcButtons, wenn
-    # die Link-Nummer des Zeigers im Arc fehlt, und fuer _SKIP_HOSTERS.
+    # Hoster-Namen vergleichbar machen: "Voe"/"VOE" -> "voe"; eine Endung wie .sx oder
+    # .com wuerde mit abgeschnitten (die Tab-Labels der Seite fuehren keine — Stichprobe
+    # 14.10.2026 ueber 163 Serienseiten: Voe, Mp4Upload, PlayN, DoodStream, FMoon, VidM,
+    # Vivo, ToastP, V). Noetig, weil die Tab-Reihenfolge auf Serie und Arc abweicht ->
+    # Rueckfall in _arcButtons, wenn die Link-Nummer des Zeigers im Arc fehlt, und fuer
+    # _SKIP_HOSTERS.
     s = (s or '').lower().strip()
     s = re.sub(r'\.(sx|com|net|to|sb|io|cc|me|stream|club|pro|live|fun|si|ws)$', '', s)
     return re.sub(r'[^a-z0-9]', '', s)
@@ -200,11 +206,12 @@ def _requestUrl(sUrl):
     """Kodiert unmittelbar vor dem Abruf (Muster wie serienstream und movie2k).
 
     Die Seite verlinkt Titel mit Sonderzeichen kodiert im Pfad
-    ('/c%c2%b3-cube-x-cursed-x-curious-ger-sub/'). Der Parameterweg jagt jeden Wert
-    durch unquote_plus, aus '%c2%b3' wird dabei wieder '\u00b3' — und urllib bricht
-    beim Abruf mit einem UnicodeEncodeError ab, der Nutzer sieht einen Skriptfehler.
-    Betroffen sind 23 Titel im Sub- und 5 im Dub-Index (Ranma \u00bd, Cat's\u2665Eye,
-    Madoka\u2606Magica ...). Kodiert wird NIE im Parameter, sondern nur hier; '%'
+    ('/c%c2%b3-cube-x-cursed-x-curious-ger-sub/'). Bis zum 02.11.2026 jagte der
+    Parameterweg jeden Wert durch unquote_plus, aus '%c2%b3' wurde dabei wieder '\u00b3'
+    — und urllib brach beim Abruf mit einem UnicodeEncodeError ab, der Nutzer sah einen
+    Skriptfehler. Betroffen waren 23 Titel im Sub- und 5 im Dub-Index (28.08.2026; am
+    14.10.2026 25 und 6 — Ranma \u00bd, Cat's\u2665Eye, Madoka\u2606Magica ...). Kodiert
+    wird weiter NIE im Parameter, sondern nur hier (eine Stelle fuer alle Adressen); '%'
     bleibt in der safe-Liste, damit bereits kodierte Adressen nicht doppelt kodiert
     werden.
     """
@@ -486,20 +493,29 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False):
     params = ParameterHandler()
     if not entryUrl:
         entryUrl = params.getValue('sUrl')
+    bFolgeseite = False
     if not sSearchText:
         # Beim Klick auf "Naechste Seite" ruft Kodi die Funktion neu auf, der
         # Suchbegriff steht dann nur noch im Parameter. Ohne ihn liefe Seite 2
         # ungefiltert und zeigte wieder die Volltext-Treffer der Seite.
         sSearchText = params.getValue('sSearchText') or False
-    oRequest = cRequestHandler(_requestUrl(entryUrl), ignoreErrors=(sGui is not False))
-    if cConfig().getSetting('global_search_' + SITE_IDENTIFIER) == 'true':
-        oRequest.cacheTime = 60 * 60 * 6
+        bFolgeseite = bool(sSearchText)
+    # Eine Folgeseite der Suche meldet Fehler nicht als Fenster: dort gilt wie beim
+    # Blaettern „Kein Eintrag gefunden" (Seite 1 meldet wie bisher).
+    oRequest = cRequestHandler(_requestUrl(entryUrl), ignoreErrors=(sGui is not False or bFolgeseite))
     sHtmlContent = oRequest.request()
     aResult = _RE_ENTRY.findall(sHtmlContent)
     if not aResult:
         if not sGui:
             oGui.showInfo()
         return
+    # Der Weiter-Beleg steht im ohnehin geladenen HTML; er wird VOR dem Filter
+    # gelesen, damit eine nach dem Filter leere Seite trotzdem weiterblaettert.
+    mNext = None
+    if not sGui:
+        mNext = _RE_NEXT.search(sHtmlContent)
+        if not mNext and sSearchText:
+            mNext = _RE_NEXT_HEAD.search(sHtmlContent)
     if sSearchText:
         # Je Eintrag den zugehoerigen Markup-Block mitnehmen — dort stehen
         # Beschreibung und Alternativtitel, auf denen der Filter arbeitet.
@@ -515,7 +531,10 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False):
             sBlock = re.split(r'wp-pagenavi|nextpostslink', sBlock)[0][:6000]
             aWithBlock.append((sUrl, sTitle, sThumb, sBlock))
         aResult = [(u, t, th) for u, t, th, _ in _filterSearch(sSearchText, aWithBlock)]
-        if not aResult:
+        if not aResult and not mNext:
+            # Erst wenn auch keine Folgeseite mehr da ist, kommt die Meldung —
+            # eine nach dem Filter leere Seite bekommt sonst nur den Weiter-Eintrag
+            # (Bauform wie bei den uebrigen Seiten seit 21.10.2026).
             if not sGui:
                 oGui.showInfo()
             return
@@ -533,14 +552,14 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False):
         params.setParam('sName', sTitle)
         oGui.addFolder(oGuiElement, params, True, total)
     if not sGui:
-        m = _RE_NEXT.search(sHtmlContent)
-        if not m and sSearchText:
-            m = _RE_NEXT_HEAD.search(sHtmlContent)
-        if m:
-            params.setParam('sUrl', m.group(1))
+        if mNext:
+            # FRISCHER ParameterHandler: der aus der Schleife traegt entryUrl und sName
+            # des letzten Eintrags mit, die Folgeseite braucht davon nichts.
+            nextParams = ParameterHandler()
+            nextParams.setParam('sUrl', mNext.group(1))
             if sSearchText:
-                params.setParam('sSearchText', sSearchText)
-            oGui.addNextPage(SITE_IDENTIFIER, 'showEntries', params)
+                nextParams.setParam('sSearchText', sSearchText)
+            oGui.addNextPage(SITE_IDENTIFIER, 'showEntries', nextParams)
         oGui.setView('tvshows')
         oGui.setEndOfDirectory()
 
@@ -587,8 +606,8 @@ def _azTitles(sBlock, seen):
             # statt hunderte namenlose Zeilen ins Menue zu schreiben.
             continue
         aItems.append((sUrl, sName))
-    # Sortiert wird NICHT: die Liste bleibt in der Reihenfolge der Seite (Jacks
-    # Entscheidung). Die Seite ordnet nach der ADRESSE, nicht nach dem Titel — Namen
+    # Sortiert wird NICHT: die Liste bleibt in der Reihenfolge der Seite (so entschieden).
+    # Die Seite ordnet nach der ADRESSE, nicht nach dem Titel — Namen
     # mit Sonderzeichen tragen die im Slug kodiert ("c%c2%b3-cube-...") und stehen
     # deshalb am Ende ihres Buchstabens ("C³ - Cube x Cursed" hinter "Cyberpunk",
     # "I★Chu" hinter "Izure"). Das ist auf der Website genauso und bleibt so.
@@ -599,7 +618,8 @@ def showAZ(entryUrl=False, sGui=False, sSearchText=False):
     """A-Z-Index: erst die Buchstabenauswahl der Seite, dann die Titel des Abschnitts.
 
     Frueher wurde der ganze Index zu EINER Liste zusammengezogen — bei "Ger Sub" sind
-    das ueber 2700 Eintraege, und der "#"-Abschnitt landete als Schwanz dahinter, wo ihn
+    das rund 2500 Titel (14.10.2026: 2499 benannte), und der "#"-Abschnitt landete als
+    Schwanz dahinter, wo ihn
     praktisch niemand findet. Die Seite gliedert selbst nach Buchstaben und beschriftet
     die Abschnitte; genau diese Gliederung wird hier uebernommen, damit sie sich
     mitaendert, wenn die Seite ihre Einteilung anpasst.
@@ -610,8 +630,6 @@ def showAZ(entryUrl=False, sGui=False, sSearchText=False):
         entryUrl = params.getValue('sUrl')
     sLetter = params.getValue('sLetter')
     oRequest = cRequestHandler(_requestUrl(entryUrl), ignoreErrors=(sGui is not False))
-    if cConfig().getSetting('global_search_' + SITE_IDENTIFIER) == 'true':
-        oRequest.cacheTime = 60 * 60 * 6
     sHtmlContent = oRequest.request()
     aSections = _azSections(sHtmlContent)
     if not aSections:
@@ -1142,7 +1160,10 @@ def showAjaxEpisodes():
     server = params.getValue('server')
     sName = params.getValue('sName')
     cover = params.getValue('sCover') or ''
-    sHtmlContent = cRequestHandler(_requestUrl(entryUrl)).request()
+    # Die Seite liefert den Nonce fuer die Abfrage unten mit — ein Token mit Ablauf, deshalb nie aus
+    # dem Cache (seit dem 05.11.2026; mit einer langen Cache-Dauer liefe die Abfrage sonst mit einem
+    # abgelaufenen Nonce ins Leere)
+    sHtmlContent = cRequestHandler(_requestUrl(entryUrl), caching=False).request()
     oGui = cGui()
     mNonce = _RE_NONCE.search(sHtmlContent)
     if not mNonce:
@@ -1174,13 +1195,16 @@ def showAjaxEpisodes():
 
 
 def showAjaxStream():
-    # Hoster-URL der gewaehlten Folge via AJAX -> ResolveURL. Nonce frisch scrapen.
+    # Hoster-URL der gewaehlten Folge via AJAX -> ResolveURL. Nonce frisch scrapen: die Seite ist
+    # hier der Hosterweg und traegt den Nonce der Abfrage — nie aus dem Cache (bis zum 05.11.2026
+    # kam sie aus dem Cache; mit einer langen Cache-Dauer liefe die Abfrage dann mit einem
+    # abgelaufenen Nonce ins Leere)
     params = ParameterHandler()
     entryUrl = params.getValue('entryUrl')
     title = params.getValue('ajaxTitle')
     server = params.getValue('server')
     episode = params.getValue('episode')
-    sHtmlContent = cRequestHandler(_requestUrl(entryUrl)).request()
+    sHtmlContent = cRequestHandler(_requestUrl(entryUrl), caching=False).request()
     hosters = []
     mNonce = _RE_NONCE.search(sHtmlContent)
     if mNonce:
@@ -1202,7 +1226,7 @@ def showSearch():
     key = 'xstream.%s.lastSearchText' % SITE_IDENTIFIER
     sSearchText = win.getProperty(key)
     if not sSearchText:
-        sSearchText = cGui().showKeyBoard(sHeading='AnimeToast Suche')
+        sSearchText = cGui().showKeyBoard(sHeading=cConfig().getLocalizedString(30281))
         if not sSearchText:
             return
         win.setProperty(key, sSearchText)
@@ -1230,7 +1254,8 @@ def _totalPages(oRequest):
 
     X-WP-TotalPages ist ein Merkmal der QUELLE — anders als eine Trefferzahl
     belegt es eine Folgeseite wirklich. Fehlt der Header, gibt es keinen
-    Weiter-Eintrag statt einen zu raten.
+    Weiter-Eintrag statt einen zu raten. Deshalb darf die Antwort nicht aus dem
+    Cache kommen (caching=False in _searchApi): der Cache kennt keine Header.
     """
     try:
         return int(oRequest.getResponseHeader().get('X-WP-TotalPages') or 0)
@@ -1278,7 +1303,13 @@ def _searchApi(oGui, sSearchText, sGui=False):
     # ignoreErrors: ueber den Fehlfall wird hier selbst entschieden. Ohne das
     # kaeme bei abgeschalteter REST-Route ein Fehlerfenster, obwohl der
     # Fallback danach sauber liefert.
-    oRequest = cRequestHandler(_requestUrl(sUrl), ignoreErrors=True)
+    # caching=False: die Seitenzahl steht NUR im Antwort-Header (X-WP-TotalPages),
+    # der HTML-Cache haelt aber nur den Rumpf. Ein Treffer aus dem Cache kaeme
+    # ohne Header zurueck, und die Liste verloere ihren Weiter-Eintrag — so beim
+    # Rueckweg von Seite 2 auf Seite 1 (Kodi ruft das Verzeichnis neu auf; am
+    # Geraet 21.10.2026 mit „kill"). Der Abruf ist klein (Felder-Auswahl), der
+    # Preis ist ein Netzabruf je Aufruf der Seite.
+    oRequest = cRequestHandler(_requestUrl(sUrl), ignoreErrors=True, caching=False)
     aPosts = oRequest.requestJson()
 
     # None = kein brauchbares JSON. Leere LISTE dagegen heisst schlicht: keine
@@ -1305,7 +1336,12 @@ def _searchApi(oGui, sSearchText, sGui=False):
         aEntries.append((sLink, sTitle, p.get('featured_media') or 0, sBlock))
 
     aHits = _filterSearch(sSearchText, aEntries)
-    if not aHits:
+    # Die Seitenzahl kommt aus dem Antwort-Header und wird VOR der Leer-Pruefung
+    # gelesen: eine nach dem Filter leere Seite bekommt nur den Weiter-Eintrag, die
+    # Meldung kommt erst ohne Folgeseite (Bauform wie bei den uebrigen Seiten).
+    iTotal = _totalPages(oRequest)
+    bNext = not sGui and iPage < iTotal
+    if not aHits and not bNext:
         if not sGui:
             oGui.showInfo()
         return True
@@ -1320,20 +1356,23 @@ def _searchApi(oGui, sSearchText, sGui=False):
         oGuiElement = cGuiElement(sTitle, SITE_IDENTIFIER, 'showSeasons')
         oGuiElement.setMediaType('tvshow')
         oGuiElement.setThumbnail(dThumbs.get(iMedia, ''))
-        # Adresse ROH weitergeben: der Parameterweg jagt jeden Wert durch
-        # unquote_plus, kodiert wird erst unmittelbar vor dem Abruf.
+        # Adresse ROH weitergeben, kodiert wird erst unmittelbar vor dem Abruf
+        # (_requestUrl; bis zum 02.11.2026 jagte der Parameterweg jeden Wert durch
+        # unquote_plus, eine Kodierung hier waere aufgeloest worden).
         params.setParam('entryUrl', sLink)
         params.setParam('sName', sTitle)
         oGui.addFolder(oGuiElement, params, True, total)
 
-    iTotal = _totalPages(oRequest)
-    if not sGui and iPage < iTotal:
-        params.setParam('iPage', iPage + 1)
-        params.setParam('sSearchText', sSearchText)
+    if bNext:
+        # FRISCHER ParameterHandler: der aus der Schleife traegt entryUrl und sName
+        # des letzten Treffers mit, die Folgeseite braucht davon nichts.
+        nextParams = ParameterHandler()
+        nextParams.setParam('iPage', iPage + 1)
+        nextParams.setParam('sSearchText', sSearchText)
         # Seitenlage am Weiter-Eintrag: die REST-API nennt ihre letzte Seite selbst
         # (X-WP-TotalPages). Die HTML-Suche (Fallback, showEntries) bleibt ohne Angabe,
         # dort belegt die Seite nur die Folgeseite, kein Ende.
-        oGui.addNextPage(SITE_IDENTIFIER, 'showSearchEntries', params, cGui.pageInfo(iPage, iTotal))
+        oGui.addNextPage(SITE_IDENTIFIER, 'showSearchEntries', nextParams, cGui.pageInfo(iPage, iTotal))
     return True
 
 

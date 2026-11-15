@@ -24,24 +24,22 @@ class cGuiElement:
     MEDIA_TYPES = ['movie', 'tvshow', 'season', 'episode']
 
     def __init__(self, sTitle: object = '', sSite: object = None, sFunction: object = None) -> None:
+        # Die Felder sMediaUrl, sTitleSecond, sSubLanguage und sInfo sind seit dem 02.11.2026 raus: ihre Setter gingen
+        # mit dem Totcode-Ausbau, kein Site-File und kein Core-Code setzte sie; from_dict liest aelter
+        # zwischengespeicherte Suchergebnisse weiter ueber get() mit Vorgabe.
         self.__sType = 'video'
-        self.__sMediaUrl = ''
         self.__sTitle = cUtil.cleanse_text(sTitle)
-        self.__sTitleSecond = ''
         self.__sDescription = ''
         self.__sThumbnail = ''
         self.__sIcon = self.DEFAULT_FOLDER_ICON
         self.__aItemValues = {}
         self.__aProperties = {}
-        self.__aContextElements = []
         self.__sFanart = self.DEFAULT_FANART
         self.__sSiteName = sSite
         self.__sFunctionName = sFunction
         self._sLanguage = ''
-        self._sSubLanguage = ''
         self._sYear = ''
         self._sQuality = ''
-        self._sInfo = ''
         self._mediaType = ''
         self._season = ''
         self._episode = ''
@@ -49,17 +47,10 @@ class cGuiElement:
         self._rating = ''
         self._isMetaSet = False
 
-    def setType(self, sType):
-        self.__sType = sType
-
     def getType(self):
+        # immer 'video' (der Setter dazu hatte nie einen Aufrufer und ist seit dem 02.11.2026 raus); gui.py nimmt den
+        # Wert nur als Rueckfall fuer setMediaType, wenn weder _mediaType noch itemValues['mediaType'] etwas sagen
         return self.__sType
-
-    def setMediaUrl(self, sMediaUrl):
-        self.__sMediaUrl = sMediaUrl
-
-    def getMediaUrl(self):
-        return self.__sMediaUrl
 
     def setSiteName(self, sSiteName):
         self.__sSiteName = sSiteName
@@ -92,12 +83,18 @@ class cGuiElement:
             isMatch, aYear = cParser.parse(self.__sTitle, r'(.*?)\((\d{4})\)(.*)')
             if isMatch:
                 self.__sTitle = (aYear[0][0].strip() + ' ' + aYear[0][2].strip()).strip()
-                self.setYear(aYear[0][1])
+                # Das Jahr aus dem Titel zaehlt nur, solange keines gesetzt ist: unten haengt die Funktion
+                # _sYear wieder an, und bis zum 02.11.2026 las jeder weitere Aufruf genau dieses Jahr erneut
+                # heraus und setzte es per setYear zurueck — ein Jahr von TMDB (getMeta, "TMDB Infos laden")
+                # stand so nur bis zum naechsten getTitle in den Werten (02.11.2026).
+                if not self._sYear:
+                    self.setYear(aYear[0][1])
         if '*19' in self.__sTitle or '*20' in self.__sTitle:
             isMatch, aYear = cParser.parse(self.__sTitle, r'(.*?)\*(\d{4})\*')
             if isMatch:
                 self.__sTitle = aYear[0][0]
-                self.setYear(aYear[0][1])
+                if not self._sYear:
+                    self.setYear(aYear[0][1])
         if '*english*' in self.__sTitle.lower():
             isMatch, aLang = cParser.parse(self.__sTitle, r'(.*?)\*(.*?)\*')
             if isMatch:
@@ -195,21 +192,6 @@ class cGuiElement:
         except:
             pass
 
-    def getQuality(self):
-        return self._sQuality
-
-    def setInfo(self, info):
-        self._sInfo = info
-
-    def getInfo(self):
-        return self._sInfo
-
-    def setTitleSecond(self, sTitleSecond):
-        self.__sTitleSecond = cUtil.cleanse_text(str(sTitleSecond))
-
-    def getTitleSecond(self):
-        return self.__sTitleSecond
-
     def setDescription(self, sDescription):
         sDescription = cUtil.cleanse_text(sDescription)
         self.__sDescription = sDescription
@@ -257,10 +239,6 @@ class cGuiElement:
             self.__aItemValues[sPropertyKey] = self.__aProperties[sPropertyKey]
         return self.__aItemValues
 
-    # siehe gui.setInfoTagVideo() 
-    def addItemProperties(self, sPropertyKey, sPropertyValue):
-        self.__aProperties[sPropertyKey] = sPropertyValue
-
     def getItemProperties(self):
         for sItemValueKey in self.__aItemValues.keys():
             if not self.__aItemValues[sItemValueKey] == '':
@@ -270,39 +248,25 @@ class cGuiElement:
                     pass
         return self.__aProperties
 
-    def addContextItem(self, oContextElement):
-        self.__aContextElements.append(oContextElement)
-
-    def getContextItems(self):
-        return self.__aContextElements
-
     def setLanguage(self, sLang):
         self._sLanguage = str(sLang)
-
-    def setSubLanguage(self, sLang):
-        self._sSubLanguage = str(sLang)
 
     def to_dict(self):
         """Serialize this GuiElement to a plain dict for caching."""
         return {
             'sType': self.__sType,
-            'sMediaUrl': self.__sMediaUrl,
             'sTitle': self.__sTitle,
-            'sTitleSecond': self.__sTitleSecond,
             'sDescription': self.__sDescription,
             'sThumbnail': self.__sThumbnail,
             'sIcon': self.__sIcon,
             'aItemValues': self.__aItemValues,
             'aProperties': self.__aProperties,
-            'aContextElements': [],  # context elements are rebuilt by the GUI
             'sFanart': self.__sFanart,
             'sSiteName': self.__sSiteName,
             'sFunctionName': self.__sFunctionName,
             'sLanguage': self._sLanguage,
-            'sSubLanguage': self._sSubLanguage,
             'sYear': self._sYear,
             'sQuality': self._sQuality,
-            'sInfo': self._sInfo,
             'mediaType': self._mediaType,
             'season': self._season,
             'episode': self._episode,
@@ -316,23 +280,18 @@ class cGuiElement:
         """Reconstruct a GuiElement from a cached dict."""
         obj = cls()
         obj.__sType = data.get('sType', 'video')
-        obj.__sMediaUrl = data.get('sMediaUrl', '')
         obj.__sTitle = data.get('sTitle', '')
-        obj.__sTitleSecond = data.get('sTitleSecond', '')
         obj.__sDescription = data.get('sDescription', '')
         obj.__sThumbnail = data.get('sThumbnail', '')
         obj.__sIcon = data.get('sIcon', cls.DEFAULT_FOLDER_ICON)
         obj.__aItemValues = data.get('aItemValues', {})
         obj.__aProperties = data.get('aProperties', {})
-        obj.__aContextElements = []
         obj.__sFanart = data.get('sFanart', cls.DEFAULT_FANART)
         obj.__sSiteName = data.get('sSiteName', None)
         obj.__sFunctionName = data.get('sFunctionName', None)
         obj._sLanguage = data.get('sLanguage', '')
-        obj._sSubLanguage = data.get('sSubLanguage', '')
         obj._sYear = data.get('sYear', '')
         obj._sQuality = data.get('sQuality', '')
-        obj._sInfo = data.get('sInfo', '')
         obj._mediaType = data.get('mediaType', '')
         obj._season = data.get('season', '')
         obj._episode = data.get('episode', '')
@@ -341,7 +300,7 @@ class cGuiElement:
         obj._isMetaSet = data.get('isMetaSet', False)
         return obj
 
-    def getMeta(self, mediaType, tmdbID='', TVShowTitle='', season='', episode='', mode='add'):
+    def getMeta(self, mediaType, tmdbID='', TVShowTitle='', season='', episode=''):
         '''
         Fetch metainformations for GuiElement.
         Args:
@@ -349,14 +308,17 @@ class cGuiElement:
         Kwargs:
             tmdbID (str)        :
             TVShowTitle (str)   :
-            mode (str)          : 'add'/'replace' defines if fetched metainformtions should be added to existing informations, or if they should replace them.
+
+        TMDB-Werte ERSETZEN die der Seite (Cover, Hintergrund, Beschreibung, Bewertung, Genre,
+        Jahr ...); was TMDB nicht liefert, bleibt von der Seite (Serienname, Staffel, Folge,
+        Seitenwerte). Bis zum 25.10.2026 gab es dazu die Einstellung "TMDB Infos ueberschreiben
+        Seiteninfos" (so entschieden: raus) — ihr Ersetzen-Zweig tauschte die GANZE Werteliste aus, an
+        Folgen fehlte danach der Serienname (kein "Weitere Quellen", Kodi ohne Serientitel).
         '''
         if cConfig().getSetting('TMDBMETA') == 'false':
             return False
         if not self._mediaType:
             self.setMediaType(mediaType)
-        if mode not in ['add', 'replace']:
-            logger.error('Wrong meta set mode')
         if not season and self._season:
             season = self._season
         if not episode and self._episode:
@@ -369,16 +331,25 @@ class cGuiElement:
         if not oMetaget:
             return False
 
+        # Gesucht wird mit dem sauberen Titel der Seite: Sites legen ihn als 'originaltitle' ab, wenn
+        # das Label einen Vorsatz traegt (aniworld/serienstream/burningseries bei Filmen in einer
+        # Serie, "5 - Titel"), sonst zaehlt das Label. Mit dem Label fand TMDB bei den One-Piece-
+        # Filmen von aniworld 13 von 22, mit dem Seitentitel 21 (25.10.2026). Derselbe Titel wird
+        # unten als 'siteTitle' gesichert.
+        sSiteTitle = self.__aItemValues.get('originaltitle', '') or self.getTitle()
+        # Ohne die zweite TMDB-Abfrage je Titel (advanced): die Einstellung "Erweiterte Metadaten"
+        # ist seit dem 25.10.2026 ausgebaut (so entschieden) — Besetzung, Laufzeit und Trailer-Link holt das
+        # Fenster "TMDB Info" ohnehin selbst, die Listen brauchten damit doppelt so lange.
         if self._mediaType == 'movie':
             if self._sYear:
-                meta = oMetaget.get_meta(self._mediaType, self.getTitle(), year=self._sYear, advanced=cConfig().getSetting('advanced'))
+                meta = oMetaget.get_meta(self._mediaType, sSiteTitle, year=self._sYear)
             else:
-                meta = oMetaget.get_meta(self._mediaType, self.getTitle(), advanced=cConfig().getSetting('advanced'))
+                meta = oMetaget.get_meta(self._mediaType, sSiteTitle)
         elif self._mediaType == 'tvshow':
             if self._sYear:
-                meta = oMetaget.get_meta(self._mediaType, self.getTitle(), year=self._sYear, advanced=cConfig().getSetting('advanced'))
+                meta = oMetaget.get_meta(self._mediaType, sSiteTitle, year=self._sYear)
             else:
-                meta = oMetaget.get_meta(self._mediaType, self.getTitle(), advanced=cConfig().getSetting('advanced'))
+                meta = oMetaget.get_meta(self._mediaType, sSiteTitle)
         elif self._mediaType == 'season':
             meta = {}
         elif self._mediaType == 'episode':
@@ -387,30 +358,38 @@ class cGuiElement:
             return False
 
         if not meta:
+            # Abgefragt und nichts gefunden: der Merker wird trotzdem gesetzt, sonst fragt der
+            # Vorlauf der Liste diese Eintraege nach der Sammelsuche (globale Suche, Weitere
+            # Quellen) ein zweites Mal (25.10.2026: globale Suche 99 statt 91 Abfragen).
+            self._isMetaSet = True
             return False
 
         if self._mediaType == 'season':
             meta = meta[0]
 
-        if mode == 'replace':
-            self.setItemValues(meta)
-            if 'cover_url' in meta:
-                self.setThumbnail(meta['cover_url'])
-            if 'backdrop_url' in meta:
-                self.setFanart(meta['backdrop_url'])
-            if 'title' in meta and episode:
-                self.setTitle(str(episode) + '. ' + meta['title'])
-
-        else:
-            meta.update(self.__aItemValues)
-            meta.update(self.__aProperties)
-            if 'cover_url' in meta != '' and self.__sThumbnail == '':
-                self.setThumbnail(meta['cover_url'])
-
-            if 'backdrop_url' in meta and self.__sFanart == self.DEFAULT_FANART:
-                self.setFanart(meta['backdrop_url'])
-            self.setItemValues(meta)
+        aValues = dict(self.__aItemValues)
+        # Den Titel der Seite als 'siteTitle' sichern, bevor TMDBs Originaltitel das Feld
+        # 'originaltitle' fuellt: "Weitere Quellen" ist eine Seitensuche, und deutsche Seiten
+        # fuehren den Verleihtitel, nicht den Titel aus dem Herkunftsland (25.10.2026, megakino
+        # Filme: bei 7 von 20 weicht der TMDB-Originaltitel ab, alle 7 ohne Treffer, der
+        # Seitentitel traf auf 3 bis 8 anderen Seiten). gui.__createContextMenu liest es.
+        aValues['siteTitle'] = sSiteTitle
+        aValues.update(meta)
+        self.setItemValues(aValues)
+        if 'cover_url' in meta:
+            self.setThumbnail(meta['cover_url'])
+        if 'backdrop_url' in meta:
+            self.setFanart(meta['backdrop_url'])
+        if 'title' in meta and episode:
+            # Folgen-Label in der Hausform "S04E01 - Titel" (cParser.episodeLabel, eine Form auf
+            # allen Sites) mit dem Folgentitel von TMDB — vorher "1. Titel".
+            self.setTitle(cParser.episodeLabel(season, episode, meta['title']))
         if 'tmdb_id' in meta:
             self._tmdbID = meta['tmdb_id']
+        if meta.get('year') and self._sYear:
+            # Hatte die Seite ein Jahr, ersetzt TMDB es auch im Label: getTitle haengt _sYear an, sonst stuende
+            # im Label 1986 und in den Werten (Kodi-Info, Trailer-Suche) 1984 (seit dem 02.11.2026). Ohne Jahr
+            # der Seite bleibt das Label ohne Jahr — die Werte tragen das von TMDB.
+            self._sYear = str(meta['year'])
         self._isMetaSet = True
         return meta

@@ -28,6 +28,14 @@ STATUS_CLOUDFLARE = '-4'   # Cloudflare-Challenge erkannt
 STATUS_OFFLINE_DNS = '-5'  # Domain existiert nicht mehr (DNS: Name unbekannt)
 STATUS_UNKNOWN = '0'       # unerwarteter Fehler, Lage unbekannt
 
+# Lagen OHNE Antwort der Seite: hier wissen wir nicht, ob die Seite tot ist oder nur
+# gerade nicht durchkam (Netz beim Kodi-Start noch nicht da, erster Kontakt hinter
+# einem Schutzsystem langsam). Nur diese Seiten fragt der Service nach dem Start noch
+# einmal (checkDomain(retry=True), Zeitpunkt in service.py). Alles andere — HTTP-Code,
+# erkannte Sperre, Domain laut DNS weg — ist eine Antwort und bleibt bis zum naechsten
+# Start oder manuellen Check stehen.
+RETRY_STATUSES = (STATUS_TIMEOUT, STATUS_NO_CONNECT, STATUS_UNKNOWN)
+
 # Anzeige-Tabelle fuer die Eigencodes: Wert -> String-ID des Anzeigetexts. Beide
 # Anzeigen — das Hauptmenue (xstream.py:_siteStatusSuffix) und die Support-Info
 # (__getPluginDataIndex) — lesen diese Tabelle, damit ein neuer Wert nur an EINER
@@ -166,7 +174,9 @@ class cPluginHandler:
 
     def __updatePluginDB(self, data):
         if not os.path.exists(self.profilePath):
-            os.makedirs(self.profilePath)
+            # exist_ok wie im requestHandler (06.10.2026): auf einem frischen Profil legen Dienst und erster
+            # Plugin-Aufruf den Ordner womoeglich gleichzeitig an (02.11.2026)
+            os.makedirs(self.profilePath, exist_ok=True)
         file = open(self.pluginDBFile, 'w')
         json.dump(data, file)
         file.close()
@@ -302,7 +312,7 @@ class cPluginHandler:
         for fileName in fileNames:
             pluginData = self.__getPluginDataIndex(fileName, self.defaultFolder)
             list_of_plugins.append(pluginData)
-        # Eine kompakte Zeile pro Indexseite: Name:  aktiv | Domain | Status | Suche: an
+        # Eine kompakte Zeile pro Indexseite: Name:  aktiviert | Domain | Status | Suche: aktiviert
         AKTIV = cConfig().getLocalizedString(30418)    # aktiviert
         INAKTIV = cConfig().getLocalizedString(30419)  # deaktiviert
         def _onoff(v):
@@ -322,14 +332,10 @@ class cPluginHandler:
             parts.append(cConfig().getLocalizedString(30426) + ' ' + _onoff(d.get('globalsearch', True)))
             lines.append(d.get('name', '?') + ':  ' + ' | '.join(parts))
         list_of_PluginData = '\n\n'.join(lines)
-        if cConfig().getSetting('githubUpdateResolver') == 'true':  # Resolver Update An/Aus
-            UPDATERU = cConfig().getLocalizedString(30418)  # aktiviert
-        else:
-            UPDATERU = cConfig().getLocalizedString(30419)  # deaktiviert
         if cConfig().getSetting('bypassDNSlock') == 'true':  # DNS Bypass
-            BYPASS = cConfig().getLocalizedString(30418)  # Aktiv
+            BYPASS = cConfig().getLocalizedString(30418)  # aktiviert
         else:
-            BYPASS = cConfig().getLocalizedString(30419)  # Inaktiv
+            BYPASS = cConfig().getLocalizedString(30419)  # deaktiviert
         # xStream-Repo (falls als eigenes Repo installiert) fuer den xStream-Teil
         repoXstream = ''
         try:
@@ -339,39 +345,50 @@ class cPluginHandler:
             pass
 
         Dialog().textviewer(cConfig().getLocalizedString(30265),
-            cConfig().getLocalizedString(30413) + '\n'  # Geräte Informationen
+            cConfig().getLocalizedString(30413) + '\n'  # [B]Gerät[/B]
             + 'Kodi Version:  ' + xbmc.getInfoLabel('System.BuildVersion')[:4] + ' (Code Version: ' + xbmc.getInfoLabel('System.BuildVersionCode') + ')' + '\n'
-            + cConfig().getLocalizedString(30266) + '   {0}'.format(platform().title()) + '\n'  # System Plattform
+            + cConfig().getLocalizedString(30266) + '   {0}'.format(platform().title()) + '\n'  # Plattform:
             + '\n'
-            + cConfig().getLocalizedString(30414) + '\n'  # Plugin Informationen
+            + cConfig().getLocalizedString(30414) + '\n'  # [B]Plugin[/B]
             # --- xStream ---
             + cConfig().getAddonInfo('name') + ' Version:  ' + cConfig().getAddonInfo('version') + '\n'
-            + cConfig().getLocalizedString(30435) + ' ' + getRepofromAddonsDB(cConfig().getAddonInfo('id')) + '\n'  # xStream: installiert aus Repository
+            + cConfig().getLocalizedString(30435) + ' ' + getRepofromAddonsDB(cConfig().getAddonInfo('id')) + '\n'  # Repository: <Herkunfts-Repo aus Kodis Addon-DB>
             + repoXstream
             + '\n'
             # --- ResolveURL ---
             + cConfig('script.module.resolveurl').getAddonInfo('name') + ' Version:  ' + cConfig('script.module.resolveurl').getAddonInfo('version') + '\n'
-            + cConfig('script.module.resolveurl').getAddonInfo('name') + ' Update:  ' + UPDATERU + '\n'
             + '\n'
-            + cConfig().getLocalizedString(30420) + '\n'  # DNS Informationen
-            + cConfig().getLocalizedString(30417) + ' ' + BYPASS + '\n'  # xStream DNS Bypass aktiv/inaktiv
-            + cConfig().getLocalizedString(30434) + ' 1: ' + getDNS('Network.DNS1Address') + '\n' # DNS Nameserver 1
-            + cConfig().getLocalizedString(30434) + ' 2: ' + getDNS('Network.DNS2Address') + '\n' # DNS Nameserver 2
+            + cConfig().getLocalizedString(30420) + '\n'  # [B]DNS[/B]
+            + cConfig().getLocalizedString(30417) + ' ' + BYPASS + '\n'  # DNS-Sperre umgehen: aktiviert/deaktiviert
+            + cConfig().getLocalizedString(30434) + ' 1: ' + getDNS('Network.DNS1Address') + '\n' # DNS 1: <Nameserver>
+            + cConfig().getLocalizedString(30434) + ' 2: ' + getDNS('Network.DNS2Address') + '\n' # DNS 2: <Nameserver>
             + '\n'
-            + cConfig().getLocalizedString(30422) + '\n'  # Indexseiten Informationen
+            + cConfig().getLocalizedString(30422) + '\n'  # [B]Indexseiten[/B]
             + list_of_PluginData
             )
 
-    # Überprüfung des Domain Namens. Leite um und hole neue URL und schreibe in die settings.xml. Bei nicht erreichen der Seite deaktiviere Globale Suche bis zum nächsten Start und überprüfe erneut.
+    # Prueft je Site die Startseite (ein Thread je Site): bei Umleitung wird die neue Domain in
+    # die Settings uebernommen; die globale Suche ist danach nur an, wenn die Seite geantwortet
+    # hat (200 oder Umleitung) — Fehlercode, erkannte Sperre, unbekannte Domain, Timeout und
+    # fehlende Verbindung nehmen sie heraus (Einzelheiten in _checkdomain). Die Domain bleibt
+    # bei Timeout und fehlender Verbindung stehen.
     # show_notify=False fuer silent Auto-Check (service.py beim Startup),
     # show_notify=True (Default) fuer manuellen Button-Click mit User-Feedback.
-    def checkDomain(self, show_notify=True):
+    # retry=True (service.py, zwei Minuten nach dem Start): nur die Seiten mit einem Status aus
+    # RETRY_STATUSES — ein Aussetzer genau beim Kodi-Start sieht aus wie eine tote Seite und
+    # klebte bis zum naechsten Start; so kommt die Seite nach zwei Minuten von selbst in die Suche zurueck.
+    def checkDomain(self, show_notify=True, retry=False):
         import threading
-        logger.debug('Query status code of the provider')
+        logger.debug('Query status code of the provider' + (' (Nachpruefung)' if retry else ''))
         fileNames = self.__getFileNamesFromFolder(self.defaultFolder)
         threads = []
         for fileName in fileNames:
             try:
+                # Der Dateiname ist der SITE_IDENTIFIER, wie beim Leeren der
+                # falschen Domain darunter. Eine deaktivierte Site hat einen leeren Status und
+                # faellt hier ebenfalls heraus.
+                if retry and cConfig().getSetting('plugin_' + fileName + '_status') not in RETRY_STATUSES:
+                    continue
                 # Eine gespeicherte FALSCHE Domain (Sperr- oder Parkseite, Listen oben)
                 # VOR dem Import des Site-Files leeren, damit der Check in derselben
                 # Sitzung auf den Default des Files zurueckfaellt und _checkdomain
@@ -381,7 +398,7 @@ class cPluginHandler:
                 # leert, hat keinen Default mehr, sondern dieselbe falsche Domain, und
                 # fragt sie erneut an; antwortet die Parkseite mit 200, steht sie
                 # danach wieder im Setting (nachgestellt 01.10.2026 mit site-maps.cc).
-                # Der Dateiname ist der SITE_IDENTIFIER (Klassen-Audit).
+                # Der Dateiname ist der SITE_IDENTIFIER.
                 if _isWrongDomain(cConfig().getSetting('plugin_' + fileName + '.domain')):
                     cConfig().setSetting('plugin_' + fileName + '.domain', '')
                     cConfig().setSetting('plugin_' + fileName + '_status', '')
@@ -390,7 +407,7 @@ class cPluginHandler:
                 provider = pluginDataDomain['identifier']
                 _domain = pluginDataDomain['domain']
                 domain = cConfig().getSetting('plugin_' + provider + '.domain', _domain)
-                base_link = 'https://' + domain + '/'  # URL_MAIN — alle Sites nutzen https; http triggert Cloudflare-Block
+                base_link = 'https://' + domain + '/'  # wie URL_MAIN der Site-Files ('https://' + DOMAIN)
 
                 if cConfig().getSetting('plugin_' + provider) == 'false':
                     cConfig().setSetting('global_search_' + provider, 'false')
@@ -419,6 +436,9 @@ class cPluginHandler:
         # nach, oder der naechste Check korrigiert die Domain — beides harmlos.
         # Das Budget liegt ueber dem Socket-Timeout, damit ein normaler Lauf (alle
         # Domains antworten in der Zeit) NIE abgeschnitten wird.
+        if retry and not threads:
+            logger.debug('checkDomain: Nachpruefung ohne Kandidaten')
+            return
         deadline = time.time() + max(int(cConfig().getSetting('requestTimeout', 10)), 10) + 5
         for t in threads:
             remaining = deadline - time.time()
@@ -439,11 +459,14 @@ class cPluginHandler:
             # Der Status ist LEER, wenn gar keine HTTP-Antwort zustande kam:
             # Verbindungsabbruch, DNS-Fehler, TLS-Abbruch. int('') warf hier bis
             # zum 01.09.2026 einen ValueError, der im blinden `except` unten landete
-            # und dort die Domain aus den Settings loeschte — belegt an Jacks Geraet
+            # und dort die Domain aus den Settings loeschte — belegt am Geraet
             # fuer streamcloud und burningseries. "Keine Verbindung" ist aber wie ein
-            # Timeout eine unklare Lage und kein Beleg, dass die Seite tot ist:
-            # Domain und globale Suche bleiben deshalb unangetastet, STATUS_NO_CONNECT
-            # weist die Lage im Menue aus.
+            # Timeout eine unklare Lage und kein Beleg, dass die Seite tot ist: die
+            # Domain bleibt deshalb stehen, STATUS_NO_CONNECT weist die Lage im Menue
+            # aus. Die globale Suche geht trotzdem aus — eine Seite ohne Antwort kostet
+            # dort jeden Aufruf einen vollen requestTimeout (gemessen 22.10.2026 mit
+            # einer toten Seite: 11,6 statt 2,5 s) — und kommt ueber die Nachpruefung
+            # des Service (checkDomain(retry=True)) zurueck, sobald die Seite antwortet.
             sStatus = str(oRequest.getStatus() or '').strip()
             if sStatus == STATUS_OFFLINE_DNS:
                 # Der DNS kennt den Namen nicht: die Domain existiert nicht mehr.
@@ -457,6 +480,7 @@ class cPluginHandler:
                 return
             if not sStatus.lstrip('-').isdigit():
                 cConfig().setSetting('plugin_' + provider + '_status', STATUS_NO_CONNECT)
+                cConfig().setSetting('global_search_' + provider, 'false')
                 logger.debug('No connection ' + provider + ': - ' + base_link)
                 return
             status_code = int(sStatus)
@@ -481,21 +505,25 @@ class cPluginHandler:
             if status_code == -1:
                 # Lese-Timeout. Frueher flog der als Exception aus request() heraus und
                 # wurde unten von `except TimeoutError` gefangen; seit der Handler ihn
-                # selbst abfaengt, kommt er als Status -1 hier an. Behandlung unveraendert:
-                # global_search und .domain bleiben stehen, denn "langsam" ist nicht "tot".
+                # selbst abfaengt, kommt er als Status -1 hier an. .domain bleibt stehen,
+                # denn "langsam" ist nicht "tot" — aus der globalen Suche faellt die Seite
+                # aber wie bei fehlender Verbindung (Begruendung oben) bis zur Nachpruefung.
+                cConfig().setSetting('global_search_' + provider, 'false')
                 logger.debug('Timeout ' + provider + ': - ' + base_link)
                 return
 
-            if status_code >= 403:  # Sperre, Serverfehler oder Seite weg — Domain bleibt stehen
+            if status_code >= 400:  # Fehlerantwort, Sperre oder Seite weg — Domain bleibt stehen
                 # Frueher war die Grenze `403 <= status_code <= 503`; alles darueber fiel
                 # in den else-Zweig ganz unten und LOESCHTE die Domain. Cloudflare
                 # antwortet mit 520-526, wenn der Ursprungsserver nicht erreichbar ist —
                 # gemessen am 01.09.2026: ein 520 warf die eingetragene Domain weg,
-                # obwohl es dieselbe Lage wie ein 500er ist.
+                # obwohl es dieselbe Lage wie ein 500er ist. Bis zum 02.11.2026 begann der
+                # Zweig erst bei 403: eine 400 lief als Weiterleitung (Suche an), 401/402
+                # in den Loesch-Zweig unten.
                 cConfig().setSetting('global_search_' + provider, 'false')
-                logger.debug('Internal Server Error for ' + provider + ' (DDOS Guard, HTTP Error, Cloudflare or BlazingFast active)')
+                logger.debug('Internal Server Error for ' + provider + ' (DDOS Guard, HTTP Error or Cloudflare active)')
 
-            elif 300 <= status_code <= 400:  # Domain erreichbar mit Umleitung
+            elif 300 <= status_code < 400:  # Domain erreichbar mit Umleitung
                 url = oRequest.getRealUrl()
                 redirected_domain = urlparse(url).hostname
                 if _isWrongDomain(redirected_domain):
@@ -511,19 +539,21 @@ class cPluginHandler:
                 cConfig().setSetting('plugin_' + provider + '.domain', urlparse(base_link).hostname)
                 cConfig().setSetting('global_search_' + provider, 'true')
                 logger.debug('globalSearch for ' + provider + ' is activated.')
-            # Wenn keiner der Status oben greift
+            # Antwort ohne Fehler, aber nicht 200 (204, 202 einer Challenge-Seite, sonstige 2xx): erreichbar,
+            # aber ohne normalen Inhalt — die Lage ist unklar. Die Domain bleibt (wie beim Rest-Netz unten: kein
+            # Beleg, dass die Adresse falsch ist), die globale Suche ruht bis zum naechsten Check. Bis zum
+            # 02.11.2026 leerte dieser Zweig die Domain.
             else:
-                logger.debug('Error ' + provider + ' not available.')
                 cConfig().setSetting('global_search_' + provider, 'false')
-                cConfig().setSetting('plugin_' + provider + '.domain', '')
-                logger.debug('globalSearch for ' + provider + ' is deactivated.')
+                logger.debug('Unexpected status ' + provider + ' - globalSearch for ' + provider + ' is deactivated.')
         except TimeoutError:
             # Sicherheitsnetz: den Lese-Timeout faengt seit dem 25.08. der requestHandler
             # selbst ab (Status -1, siehe oben). Kommt er doch einmal von woanders hier
-            # an, bleibt die Behandlung dieselbe — global_search und .domain unangetastet,
-            # denn "langsam" ist nicht "tot".
+            # an, bleibt die Behandlung dieselbe — .domain unangetastet, globale Suche
+            # aus bis zur Nachpruefung.
             # -1 ist kein gueltiger HTTP-Status und wird im Menue als Timeout ausgewiesen.
             cConfig().setSetting('plugin_' + provider + '_status', '-1')
+            cConfig().setSetting('global_search_' + provider, 'false')
             logger.debug('Timeout ' + provider + ': - ' + base_link)
         except Exception as e:
             # Rest-Netz fuer Unvorhergesehenes. Netzfehler ohne HTTP-Antwort landen seit

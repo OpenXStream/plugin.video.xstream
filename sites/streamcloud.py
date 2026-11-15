@@ -10,8 +10,8 @@ import xbmcgui
 from resources.lib.handler.parameterHandler import ParameterHandler
 from resources.lib.handler.requestHandler import cRequestHandler, REQUEST_ERRORS
 from resources.lib.logger import logger
-from resources.lib.wrappers.meinecloud import resolveMeinecloud, resolveMeinecloudSerial, expandHosterList, buildHosterFromUrl, buildMergedHosters, MEINECLOUD_TRIGGER, isPlatformUrl, platformImdbId, packSourceUrls, unpackSourceUrls
-from resources.lib.tools import cParser
+from resources.lib.wrappers.meinecloud import resolveMeinecloud, resolveMeinecloudSerial, expandHosterList, buildHosterFromUrl, buildMergedHosters, MEINECLOUD_TRIGGER, isPlatformUrl, platformImdbId, platformSnippetId, packSourceUrls, unpackSourceUrls
+from resources.lib.tools import cParser, cUtil
 from resources.lib.gui.guiElement import cGuiElement
 from resources.lib.config import cConfig
 from resources.lib.gui.gui import cGui
@@ -28,522 +28,367 @@ DOMAIN = cConfig().getSetting('plugin_' + SITE_IDENTIFIER + '.domain', 'streamcl
 STATUS = cConfig().getSetting('plugin_' + SITE_IDENTIFIER + '_status')
 ACTIVE = cConfig().getSetting('plugin_' + SITE_IDENTIFIER)
 
+# Seit dem 03.11.2026 ist die Seite eine Next.js-App: Adressen ohne Schraegstrich am Ende (die alten
+# DLE-Pfade wie /filme-stream/ und /serien/ leiten weiter), Karten statt DLE-Kurzmeldungen, der
+# Player bettet weiter die Plattform ein (DEVIDEOSRC, Wrapper meinecloud).
 URL_MAIN = 'https://' + DOMAIN + '/'
-URL_MAINPAGE = URL_MAIN + 'streamcloud/'
-URL_MOVIES = URL_MAIN + 'filme-stream/'
-URL_KINO = URL_MAIN + 'kinofilme/'
-# „Beliebt“ (/beliebte-filme/) ist BEWUSST kein Menuepunkt: die Seite liefert dort
-# 200 Eintraege auf einer Seite, und die Film/Serie-Erkennung braucht je Eintrag einen
-# Abruf — die Liste lud zu lange (ausgebaut 2026.09.24). Nicht wieder einbauen.
-URL_FAVOURITE_MOVIE_PAGE = URL_MAIN + 'beliebte-filme/'
-URL_SERIES = URL_MAIN + 'serien/'
-URL_SEARCH = URL_MAIN + 'index.php?story=%s&do=search&subaction=search'
+URL_MAINPAGE = URL_MAIN + 'streamcloud'
+URL_KINO = URL_MAIN + 'kinofilme'
+# Trends: eine Uebersichtsseite wie die Startseite — eine Kartenliste „Trends heute" und die Reihen „Beliebt in
+# Deutschland" und „Trends der Woche" (03.11.2026: 11, 16 und 12 Titel, Filme und zum Teil Serien, laut Seite
+# mehrmals taeglich neu); in der Navigation der Seite heisst der Punkt „Trending"
+URL_TRENDS = URL_MAIN + 'trends'
+# Die Gesamtlisten kommen ueber /discover: dieselben Titel in derselben Reihenfolge wie /filme bzw.
+# /serien (03.11.2026: die ersten 48 gleich, 34.202 Filme und 1.426 Serien auf beiden Wegen), aber
+# mit „Seite x von y" — /filme und /serien nennen ihr Ende nicht.
+URL_MOVIES = URL_MAIN + 'discover?t=movie&sort=neu'
+URL_SERIES = URL_MAIN + 'discover?t=tv&sort=neu'
+URL_DISCOVER = URL_MAIN + 'discover'
+URL_GENRE = URL_MAIN + 'discover?g=%s&sort=neu'
+# Suche zuerst ueber den Textfilter von /discover: er sucht die Wortfolge am Stueck im Titel und im
+# Originaltitel und blaettert (03.11.2026: „star wars" 23 samt „Krieg der Sterne", „walking dead" 9,
+# „könig" 227 auf 4 Seiten) — deshalb dort kein Titelfilter im Addon, er wuerfe die Originaltitel-Treffer
+# weg. Die Wortfolge muss aber zeichengleich stehen: „spider man" 0 (die Seite schreibt „Spider-Man", 13),
+# „Der Herr der Ringe: Die Rückkehr des Königs" 0 (die Seite schreibt „ - " statt „: "). Findet /discover
+# nichts, fragt die Suche einmal /suche: ODER ueber die Woerter, nach Relevanz, hoechstens 60 Titel ohne
+# Folgeseite („spider man" 60, davon 13 mit allen Woertern im Titel) — dort filtert das Addon mit
+# cParser.searchTitle und bietet kein Weiter an.
+URL_SEARCH = URL_MAIN + 'discover?q=%s'
+URL_SEARCH_ANY = URL_MAIN + 'suche?q=%s'
+# Jahr: /jahr/<JJJJ> listet die Filme und Serien eines Jahres wie die Listen mit „Seite x von y" (03.11.2026: 2025
+# 954 Titel auf 16 Seiten, 1950 41 Titel). Eine Uebersicht aller Jahre gibt es nicht (/jahr antwortet 404), deshalb
+# die Eingabe wie bei AniWorld und SerienStream.
+URL_YEAR = URL_MAIN + 'jahr/%s'
 
 
 def load():
     logger.info('Load %s' % SITE_NAME)
     xbmcgui.Window(10000).clearProperty('xstream.streamcloud.lastSearchText')
+    xbmcgui.Window(10000).clearProperty('xstream.streamcloud.lastYear')
+    params = ParameterHandler()
+    params.setParam('sUrl', URL_MAINPAGE)
+    cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30881), SITE_IDENTIFIER, 'showRows'), params)  # Startseite
     params = ParameterHandler()
     params.setParam('sUrl', URL_KINO)
     cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30501), SITE_IDENTIFIER, 'showEntries'), params)  # Latest Releases
-    cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30500), SITE_IDENTIFIER, 'showLatest'))  # Neues / Updates-Sektion (Filme+Serien)
+    params = ParameterHandler()
     params.setParam('sUrl', URL_MOVIES)
     cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30502), SITE_IDENTIFIER, 'showEntries'), params)  # Movies
+    params = ParameterHandler()
+    params.setParam('sUrl', URL_TRENDS)
+    cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30555), SITE_IDENTIFIER, 'showRows'), params)  # Trends
+    params = ParameterHandler()
     params.setParam('sUrl', URL_SERIES)
-    cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30511), SITE_IDENTIFIER, 'showSeries'), params)  # Series
-    params.setParam('sUrl', URL_MAINPAGE)
-    cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30506), SITE_IDENTIFIER, 'showGenre'), params)    # Categories
-    params.setParam('sUrl', URL_MAINPAGE)
-    cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30520), SITE_IDENTIFIER, 'showSearch'), params)   # Search
+    cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30511), SITE_IDENTIFIER, 'showEntries'), params)  # Series
+    cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30506), SITE_IDENTIFIER, 'showGenre'))  # Categories
+    cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30564), SITE_IDENTIFIER, 'showYearSearch'))  # Year
+    cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30520), SITE_IDENTIFIER, 'showSearch'))  # Search
     cGui().setEndOfDirectory()
 
 
-def showLatest():
-    """Zeigt die 'Updates' Sektion von der Streamcloud-Homepage.
-    Container hat 2 Spalten: Filme links, Serien rechts (jeweils 12 Items).
-    Items im Format: <a href="URL"><div><i class="flag flag-de"></i> NAME (YEAR)</div></a>
-    URL-Pattern ist identisch fuer Filme und Serien — Movie/Serie-Erkennung erfolgt
-    via Block-Position (vor/nach 'Serien</a>' Header).
-    """
-    params = ParameterHandler()
-    sHtmlContent = cRequestHandler(URL_MAINPAGE).request()
-    if not sHtmlContent:
-        cGui().showInfo()
-        return
+# Karte (Listen, Reihen der Startseite, Entdecken; Markup 03.11.2026):
+# <a class="cv" href="/filme/<id>-<slug>" title="Name" …><div class="cv-art"><img src="…">…</div>
+# <div class="cv-t">Name</div><div class="cv-m">2026 · ★ 6,8</div></a>
+# Film oder Serie steht in der Adresse (/filme/ bzw. /serie/) — kein Abruf der Detailseite mehr.
+_RE_CARD = re.compile(r'<a class="cv" href="([^"]+)" title="([^"]*)"[^>]*>(.*?)</a>', re.S)
+_RE_CARD_TYPE = re.compile(r'^(?:https?://[^/]+)?/(filme|serie)/')
+_RE_CARD_IMG = re.compile(r'<img[^>]+src="([^"]+)"')
+_RE_CARD_META = re.compile(r'class="cv-m">(.*?)</div>', re.S)
+# Uebersichtsseiten (Startseite, Trends): jede Reihe eine <section class="rail"> mit <h2 class="rail-title">Name</h2>
+# — ueber die Section begrenzt, damit die letzte Reihe nicht bis zum Dokumentende laeuft; dazu eine Kartenliste
+# <div class="grid"> unter der Seitenueberschrift <h1 class="sec-t">Name</h1> (Trends: „Trends heute" vor den
+# Reihen; die Liste endet an der ersten Reihe bzw. am Ende von <main>, die Karten tragen eigene </div>)
+_RE_RAIL = re.compile(r'<section class="rail">(.*?)</section>', re.S)
+_RE_RAIL_HEAD = re.compile(r'<h2 class="rail-title">(.*?)</h2>', re.S)
+_RE_GRID = re.compile(r'<div class="grid">(.*?)(?=<section\b|</main>)', re.S)
+_RE_GRID_HEAD = re.compile(r'<h1 class="sec-t">(.*?)</h1>', re.S)
+# Seitenlage und Vorwaerts-Link der Listen: <p class="conta">… · Seite 1 von 594</p> und
+# <div class="carica">…<a href="/discover?…&amp;page=2">weitere Titel</a></div> — auf der letzten
+# Seite fehlt der Link (03.11.2026 an /serien Seite 30 und /discover?t=tv Seite 24 gemessen)
+_RE_CONTA = re.compile(r'<p class="conta">(.*?)</p>', re.S)
+_RE_PAGES = re.compile(r'Seite\s*(\d+)\s*von\s*(\d+)')
+_RE_MORE = re.compile(r'<div class="carica">(.*?)</div>', re.S)
+_RE_HREF = re.compile(r'href="([^"]+)"')
+# Genres im Filter der Entdecken-Seite (<select name="g">; Name und Kennung von der Seite)
+_RE_GENRE_SELECT = re.compile(r'<select[^>]*name="g"[^>]*>(.*?)</select>', re.S)
+_RE_OPTION = re.compile(r'<option[^>]*value="([^"]+)"[^>]*>([^<]+)</option>')
+# Plattform-Player der Detailseite (Film: …/movie/<imdb>, Serie: …/custom/serial/<imdb>/1/1), aufs Tag begrenzt
+_RE_IFRAME = re.compile(r'<iframe[^>]+src="(https?://[^"]+)"')
+# Poster der Detailseite: <img class="sc-poster" src="https://img.streamcloud.date/t/p/w342/…">
+_RE_DETAIL_COVER = re.compile(r'<img[^>]+class="sc-poster"[^>]+src="([^"]+)"')
 
-    # Updates-Sektion isolieren
-    isMatch, sContainer = cParser.parseSingleResult(
-        sHtmlContent,
-        r'<h2[^>]*>Updates</h2>(.*?)(?=<h2|<div\s+class="section)'
-    )
-    if not isMatch:
-        cGui().showInfo()
-        return
 
-    # Container in Filme- und Serien-Block aufteilen
-    sFilmsBlock = ''
-    sSeriesBlock = ''
-    splitMatch = re.search(r'<a\s+href="/serien/"[^>]*>Serien</a>', sContainer)
-    if splitMatch:
-        sFilmsBlock = sContainer[:splitMatch.start()]
-        sSeriesBlock = sContainer[splitMatch.end():]
-    else:
-        sFilmsBlock = sContainer
+def _absoluteUrl(sUrl):
+    if sUrl.startswith('//'):
+        return 'https:' + sUrl
+    return sUrl if sUrl.startswith('http') else URL_MAIN.rstrip('/') + '/' + sUrl.lstrip('/')
 
-    # Gleicher Item-Pattern fuer beide Bloecke
-    item_pat = r'<a href="([^"]+)"[^>]*>\s*<div[^>]*>\s*<i class="flag flag-[a-z]+"></i>\s*([^<]+)\s*</div>\s*</a>'
 
-    aFilms = re.findall(item_pat, sFilmsBlock)
-    aSeries = re.findall(item_pat, sSeriesBlock)
-    aItems = [(url, title.strip(), False) for url, title in aFilms] + \
-             [(url, title.strip(), True) for url, title in aSeries]
+def _requestUrl(sUrl):
+    """Adresse unmittelbar vor dem Abruf kodieren (Leerzeichen, Umlaute) — im Parameter steht sie roh,
+    schon kodierte Teile bleiben (`%` ist sicher)."""
+    return cParser.urlEncode(sUrl, safe="/:?=&%#")
 
-    if not aItems:
-        cGui().showInfo()
-        return
 
-    total = len(aItems)
-    isTvshow = False
-    for sUrl, sTitle, isSerie in aItems:
-        # Year aus Title extrahieren: "Name (2026)"
-        sYear = ''
-        isYear, aYear = cParser.parseSingleResult(sTitle, r'\((\d{4})\)')
-        if isYear:
-            sYear = aYear
+def _cards(sHtmlContent):
+    """Karten in Seitenreihenfolge als [(Adresse, Name, Bild, Jahr, Wertung, Serie?)], je Adresse einmal.
+    Karten ohne Namen oder mit einer anderen Adresse als /filme/ bzw. /serie/ fallen weg."""
+    aCards, aSeen = [], set()
+    for sHref, sTitle, sInner in _RE_CARD.findall(sHtmlContent or ''):
+        sHref = cUtil.unescape(sHref)
+        mType = _RE_CARD_TYPE.match(sHref)
+        sName = cUtil.unescape(sTitle).strip()
+        if not mType or not sName:
+            continue
+        sUrl = _absoluteUrl(sHref)
+        if sUrl in aSeen:
+            continue
+        aSeen.add(sUrl)
+        mImg = _RE_CARD_IMG.search(sInner)
+        sThumb = _absoluteUrl(cUtil.unescape(mImg.group(1))) if mImg else ''
+        mMeta = _RE_CARD_META.search(sInner)
+        sMeta = cUtil.removeHtmlTags(mMeta.group(1)) if mMeta else ''
+        mYear = re.search(r'\b(\d{4})\b', sMeta)
+        mRating = re.search(r'★\s*(\d+(?:[.,]\d+)?)', sMeta)
+        aCards.append((sUrl, sName, sThumb, mYear.group(1) if mYear else '',
+                       mRating.group(1).replace(',', '.') if mRating else '', mType.group(1) == 'serie'))
+    return aCards
 
-        sName = re.sub(r'\s*\(\d{4}\)\s*$', '', sTitle).strip()
 
-        if sUrl.startswith('/'):
-            sUrl = URL_MAIN.rstrip('/') + sUrl
-
-        oGuiElement = cGuiElement(
-            sName,
-            SITE_IDENTIFIER,
-            'showSeasons' if isSerie else 'showHosters'
-        )
-        oGuiElement.setMediaType('tvshow' if isSerie else 'movie')
+def _addCards(oGui, params, aCards):
+    """Die Karten als Eintraege: Serie → showSeasons (Ordner), Film → showHosters (abspielbar)."""
+    total = len(aCards)
+    for sUrl, sName, sThumb, sYear, sRating, isTvshow in aCards:
+        oGuiElement = cGuiElement(sName, SITE_IDENTIFIER, 'showSeasons' if isTvshow else 'showHosters')
+        oGuiElement.setThumbnail(sThumb)
+        oGuiElement.setMediaType('tvshow' if isTvshow else 'movie')
         if sYear:
             oGuiElement.setYear(sYear)
+        if sRating:
+            oGuiElement.addItemValue('rating', sRating)
         params.setParam('entryUrl', sUrl)
         params.setParam('sName', sName)
-        if sYear:
-            params.setParam('sYear', sYear)
-        cGui().addFolder(oGuiElement, params, isSerie, total)
-        isTvshow = isSerie
-
-    cGui().setView('movies')
-    cGui().setEndOfDirectory()
+        params.setParam('sThumbnail', sThumb)
+        oGui.addFolder(oGuiElement, params, isTvshow, total)
 
 
-def showGenre(entryUrl=False):
+def _rows(sHtmlContent):
+    """Reihen einer Uebersichtsseite in Seitenreihenfolge als [(Name, Karten)]: die Reihen der Seite und die
+    Kartenliste unter der Seitenueberschrift, falls es eine gibt. Name und Einteilung kommen aus dem Markup —
+    aendert die Seite ihre Reihen, aendert sich das Menue mit. Reihen ohne Namen oder ohne Karten fallen weg
+    (kein toter Menuepunkt)."""
+    sHtmlContent = sHtmlContent or ''
+    aBlocks = []
+    mGrid = _RE_GRID.search(sHtmlContent)
+    mHead = _RE_GRID_HEAD.search(sHtmlContent)
+    if mGrid and mHead and mHead.start() < mGrid.start():
+        aBlocks.append((mGrid.start(), mHead.group(1), mGrid.group(1)))
+    for mRail in _RE_RAIL.finditer(sHtmlContent):
+        mRailHead = _RE_RAIL_HEAD.search(mRail.group(1))
+        if mRailHead:
+            aBlocks.append((mRail.start(), mRailHead.group(1), mRail.group(1)))
+    aRows = []
+    for iPos, sHead, sBlock in sorted(aBlocks, key=lambda b: b[0]):
+        sLabel = cUtil.unescape(cUtil.removeHtmlTags(sHead)).strip()
+        aCards = _cards(sBlock)
+        if sLabel and aCards:
+            aRows.append((sLabel, aCards))
+    return aRows
+
+
+def showRows():
+    """Uebersichtsseite (Startseite, Trends): je Reihe der Seite ein Ordner, so wie die Seite sie im HTML liefert
+    (03.11.2026 Startseite: Kinofilme, Neu: Filme, Neu: Serien, Beliebte Filme mit je 20 Titeln — Beliebte Serien
+    und die Genre-Reihen laedt die Seite erst im Browser per Skript nach, sie stehen leer im HTML und fallen weg;
+    Trends: Trends heute, Beliebt in Deutschland, Trends der Woche)."""
     params = ParameterHandler()
-    if not entryUrl: entryUrl = params.getValue('sUrl')
-    oRequest = cRequestHandler(entryUrl)
-    sHtmlContent = oRequest.request()    
-    pattern = '>Genres<.*?</div></div>'
-    isMatch, sHtmlContainer = cParser.parseSingleResult(sHtmlContent, pattern)
-    if isMatch:
-        isMatch, aResult = cParser.parse(sHtmlContainer, 'href="([^"]+).*?>([^<]+)')
-    if not isMatch:
+    sUrl = params.getValue('sUrl')
+    aRows = _rows(cRequestHandler(_requestUrl(sUrl)).request())
+    if not aRows:
         cGui().showInfo()
         return
-
-    # Navigations-Einträge filtern (sind schon im Hauptmenü)
-    nav_slugs = ['filme', 'filme1', 'kinofilme', 'serien', 'serienstream-deutsch',
-                 'kinofilme-online', 'aktuelle-kinofilme-im-kino', 'demnachst',
-                 'filme-online-sehen', 'filme-stream', 'neue-filme',
-                 'erotik', 'erotikfilme']
-    for sUrl, sName in aResult:
-        if sUrl.startswith('/'):
-            sUrl = URL_MAIN + sUrl
-        slug = sUrl.rstrip('/').split('/')[-1].lower()
-        if slug in nav_slugs:
-            continue
+    for sLabel, aCards in aRows:
+        params = ParameterHandler()
         params.setParam('sUrl', sUrl)
-        cGui().addFolder(cGuiElement(sName, SITE_IDENTIFIER, 'showEntries'), params)
+        params.setParam('sRow', sLabel)
+        oGuiElement = cGuiElement(sLabel, SITE_IDENTIFIER, 'showRowEntries')
+        if aCards[0][2]:
+            oGuiElement.setThumbnail(aCards[0][2])
+        cGui().addFolder(oGuiElement, params)
     cGui().setEndOfDirectory()
 
 
-def _prefetchDetails(aUrls):
-    """Detailseiten einer Liste vorab parallel holen.
-
-    Die Film/Serie-Erkennung in showEntries braucht je Eintrag einen Abruf.
-    Sequenziell kostet das Latenz mal Listenlaenge; parallel bleibt es bei rund
-    einer Latenz. Der Requesthandler cacht die Antworten, deshalb trifft die
-    Einzelpruefung danach den Cache statt das Netz. Fehler werden geschluckt —
-    die Einzelpruefung behandelt sie ohnehin selbst.
-    """
-    # ignoreErrors: das ist ein Hilfsabruf zur Serienerkennung, der Nutzer hat
-    # diesen Titel nicht angeklickt. Antwortet die Seite mit 5xx/4xx, zeigte der
-    # requestHandler dafuer ein Fehlerfenster — beim Oeffnen einer Genre-Liste
-    # bis zu zehn hintereinander (Audit 01.09.2026, 502-Phase einer damals
-    # gleich gebauten Schwesterseite: vier Fenster fuer „Drama"). Jetzt
-    # schweigt der Abruf, der Eintrag gilt
-    # als Film; das Fenster bleibt dem Klick des Nutzers vorbehalten.
-    def _fetch(sUrl):
-        try:
-            # Nur die Seite in den Cache holen: der Serien-Check liest seit dem
-            # Plattform-Umbau (28.09.2026) allein die Marker dieser Seite, ein
-            # zweiter Abruf faellt weg (siehe _hasMeinecloudSerial).
-            cRequestHandler(sUrl, ignoreErrors=True).request()
-        except Exception:
-            pass  # Fehler behandelt die Einzelpruefung selbst
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as oPool:
-        list(oPool.map(_fetch, aUrls))
-
-
-def _hasMeinecloudSerial(sDetailHtml):
-    """Serie oder Film — die Detailseite sagt es selbst.
-
-    Die Seite bettet je Typ ein anderes Plattform-Snippet ein: bei Serien
-    `var imdb = '<tt-id>'` samt dem /serial/-Link, bei Filmen den /movie/-Link
-    ohne `var imdb`. Gemessen am 28.09.2026 auf 12 von 12 Serien- und 18 von 18
-    Filmseiten; die Plattform-API bestaetigt es (tv-Anfragen fuer Film-IDs
-    geben 403). Damit braucht die Erkennung keinen Plattform-Abruf mehr — der
-    fruehere Check-Endpunkt der Plattform (serials.php) existiert seit dem
-    Umbau nicht mehr. Die Staffeln holt spaeter resolveMeinecloudSerial.
-    """
-    if not sDetailHtml or '/serial/' not in sDetailHtml:
-        return False
-    isMatch, _ = cParser.parseSingleResult(sDetailHtml, r"var imdb = '(tt\d+)'")
-    return bool(isMatch)
-
-
-def _fetchSearchPage(entryUrl, iPage, pattern, bFrisch=False):
-    """Eine Folgeseite der Suche holen.
-
-    Rueckgabe ist (Rohtreffer, bErreicht). bErreicht=False heisst, der Abruf
-    selbst ist gescheitert — Timeout, Sperre, 404 oder leere Antwort. Das darf
-    NICHT als Ende der Ergebnisse gelten: request() liefert im Fehlerfall einen
-    Klartext aus REQUEST_ERRORS, darin findet das Muster nichts, und eine leere
-    Trefferliste sieht dann exakt wie die letzte Seite aus. Ein einzelner
-    Aussetzer wuerde so die halbe Trefferliste abschneiden (nachgestellt:
-    Fehler auf Seite 4 -> 24 statt 108 Rohtreffer).
-    """
-    sSep = '&' if '?' in entryUrl else '?'
-    # Fehler ab Seite 2 werden nicht gemeldet: die Seite blaettert weiter, als sie
-    # Ergebnisse hat, und ein 404 dort ist kein Fall fuer ein Fenster.
-    # bFrisch=True zwingt am HTML-Cache vorbei: Nachhol- und Bestaetigungs-
-    # abrufe muessen den SERVER fragen — der Cache liefert sonst exakt die
-    # Antwort zurueck, die gerade geheilt oder bestaetigt werden soll
-    # (Drosselseiten mit Status 200 werden wie normale Antworten gecacht).
-    oRequest = cRequestHandler('%s%ssearch_start=%d' % (entryUrl, sSep, iPage), ignoreErrors=True, caching=not bFrisch)
-    sHtmlContent = oRequest.request()
-    if not sHtmlContent or sHtmlContent in REQUEST_ERRORS:
-        return [], False
-    isMatch, aResult = cParser.parse(sHtmlContent, pattern)
-    return (aResult if isMatch else []), True
-
-
-# Pause vor jedem Nachholversuch: gibt einem Rate-Limit (429) Luft. Kuerzer
-# heilt seltener, laenger kostet nur im Fehlerfall — im Normalfall laeuft
-# keine einzige Pause. 0,6 s reichten der Drossel nicht (Jacks Log 01.09.2026:
-# 17 von 23 nachgeholten Seiten „weiterhin nicht erreichbar"), daher 2,5 s.
-RETRY_PAUSE = 2.5
-
-
-def _fetchMoreSearchPages(entryUrl, pattern, iMaxPages=10, iBatch=1):
-    """Folgeseiten einer Suche einsammeln — die Seite blaettert ueber `search_start`.
-
-    Ohne das endete jede Suche nach Seite 1. Die Seite sortiert ihre Treffer
-    nicht nach Relevanz, deshalb stehen Titeltreffer regelmaessig erst auf den
-    Folgeseiten: gemessen "star wars" 12 statt 32 und "koenig" 4 statt 12 bzw. 23.
-
-    Geholt wird SEQUENZIELL (iBatch=1), nicht mehr in Vierergruppen parallel:
-    mit vier gleichzeitigen Folgeseiten plus Seite 1 lief Jacks Anschluss am
-    01.09.2026 in die nginx-Drossel der Seite — 29x HTTP 429 in vier Suchen
-    ueber „Weitere Quellen", 17 Seiten blieben trotz Nachholrunde weg, die
-    Trefferzahl wuerfelte. Sequenziell kostet gemessen etwa eine Sekunde je
-    Suche bei streamcloud, bei kurzen Suchen ist es sogar schneller, weil der
-    Ende-Abbruch nach der ersten leeren Seite greift statt erst nach der
-    Vierergruppe. Der Batch-Parameter bleibt fuer den Fall, dass die Seite
-    ihre Drossel lockert.
-
-    Fehlertoleranz in zwei Stufen (Anlass 31.08.: unter der Parallellast fielen
-    je Lauf zufaellig ganze Seiten aus, die Trefferzahl wuerfelte zwischen 21,
-    26 und 39 — still, ohne jede Meldung):
-    - Ein GESCHEITERTER Abruf (Timeout, Sperre, 404) wird nach den Gruppen
-      einmal sequenziell mit kurzer Pause nachgeholt statt still verworfen.
-    - Eine ERREICHTE Seite ohne Treffer gilt erst als Listenende, wenn ein
-      zweiter Abruf das bestaetigt — ein 200er mit leerem Body saehe sonst
-      exakt wie das Ende aus und schnitte alles Folgende ab. Kostet am
-      echten Ende genau einen Zusatzabruf.
-    Die Treffer werden je Seite gesammelt und in Seitenreihenfolge
-    zurueckgegeben, damit Nachgeholtes an der richtigen Stelle landet.
-    """
-    dPages = {}
-    aRetry = []
-    iEnde = None
-    iPage = 2
-    while iPage <= iMaxPages:
-        aBatch = list(range(iPage, min(iPage + iBatch, iMaxPages + 1)))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(aBatch)) as oPool:
-            aPages = list(oPool.map(lambda p: _fetchSearchPage(entryUrl, p, pattern), aBatch))
-        for iNum, (aRows, bErreicht) in zip(aBatch, aPages):
-            if not bErreicht:
-                aRetry.append(iNum)
-            elif aRows:
-                dPages[iNum] = aRows
-            else:
-                # Ende-Kandidat: einmal bestaetigen, bevor abgebrochen wird.
-                time.sleep(RETRY_PAUSE)
-                aRows2, bErreicht2 = _fetchSearchPage(entryUrl, iNum, pattern, bFrisch=True)
-                if bErreicht2 and not aRows2:
-                    iEnde = iNum
-                    break
-                if aRows2:
-                    # Hickser: beim zweiten Abruf war die Seite doch gefuellt.
-                    logger.info('searchRetry %s: Seite %d nachgeholt, %d Treffer' % (SITE_NAME, iNum, len(aRows2)))
-                    dPages[iNum] = aRows2
-                else:
-                    # Erst leer-erreicht, dann gescheitert: unklar, Seite fehlt.
-                    logger.info('searchRetry %s: Seite %d nicht bestaetigt, Treffer dieser Seite fehlen' % (SITE_NAME, iNum))
-        if iEnde is not None:
+def showRowEntries():
+    """Die Titel EINER Reihe, so viele wie die Seite zeigt (keine Alle-Links: Filme, Serien und Genre stehen
+    ohnehin im Menue). Die Uebersichtsseite kommt aus dem Cache."""
+    params = ParameterHandler()
+    sUrl = params.getValue('sUrl')
+    sRow = params.getValue('sRow')
+    aCards = []
+    for sLabel, aRowCards in _rows(cRequestHandler(_requestUrl(sUrl)).request()):
+        if sLabel == sRow:
+            aCards = aRowCards
             break
-        iPage += iBatch
-    # Nachholrunde: gescheiterte Seiten einmal sequenziell holen. Seiten hinter
-    # einem bestaetigten Ende liegen jenseits der Ergebnisse und bleiben weg.
-    if iEnde is not None:
-        aRetry = [p for p in aRetry if p < iEnde]
-    for iNum in aRetry:
-        time.sleep(RETRY_PAUSE)
-        aRows, bErreicht = _fetchSearchPage(entryUrl, iNum, pattern, bFrisch=True)
-        if aRows:
-            logger.info('searchRetry %s: Seite %d nachgeholt, %d Treffer' % (SITE_NAME, iNum, len(aRows)))
-            dPages[iNum] = aRows
-        else:
-            logger.info('searchRetry %s: Seite %d weiterhin nicht erreichbar, Treffer dieser Seite fehlen' % (SITE_NAME, iNum))
-    aAll = []
-    for iNum in sorted(dPages):
-        aAll.extend(dPages[iNum])
-    return aAll
+    if not aCards:
+        cGui().showInfo()
+        return
+    params.setParam('sUrl', '')
+    params.setParam('sRow', '')
+    _addCards(cGui(), params, aCards)
+    cGui().setView('tvshows' if all(c[5] for c in aCards) else 'movies')
+    cGui().setEndOfDirectory()
+
+
+def showGenre():
+    """Genres aus dem Filter der Entdecken-Seite (03.11.2026: 26 Genres, „Alle Genres" ohne Kennung faellt weg), je Genre die Liste ueber
+    /discover — neueste zuerst wie die Genre-Seiten der Seite, aber mit Seitenlage."""
+    sHtmlContent = cRequestHandler(URL_DISCOVER).request()
+    mSelect = _RE_GENRE_SELECT.search(sHtmlContent or '')
+    aGenres = _RE_OPTION.findall(mSelect.group(1)) if mSelect else []
+    if not aGenres:
+        cGui().showInfo()
+        return
+    for sSlug, sName in aGenres:
+        params = ParameterHandler()
+        params.setParam('sUrl', URL_GENRE % sSlug)
+        cGui().addFolder(cGuiElement(cUtil.unescape(sName).strip(), SITE_IDENTIFIER, 'showEntries'), params)
+    cGui().setEndOfDirectory()
+
+
+def showYearSearch():
+    """Jahr eingeben wie bei AniWorld und SerienStream: Zahlenfeld, das Jahr bleibt in einer Fenster-Property, damit
+    Kodi beim Zurueck aus einem Titel die Liste ohne neues Zahlenfeld aufbaut (load() leert sie). Die Liste baut
+    showEntries — Seitenlage und Weiter wie bei Filme und Serien."""
+    win = xbmcgui.Window(10000)
+    sYear = win.getProperty('xstream.streamcloud.lastYear')
+    if not sYear:
+        sYear = str(cGui().showNumpad(numPadTitle=cConfig().getLocalizedString(30563)) or '').strip()
+        if not sYear:
+            return
+        # Die Seite fuehrt Jahresseiten von 1900 bis zwei Jahre voraus, davor und danach 404 (03.11.2026: 1899 und
+        # 2029); zwei Jahre voraus steht dort noch nichts (2028: 0 Titel, 2027: 1) — erlaubt bis ein Jahr voraus.
+        # Eine verworfene Eingabe wird gemeldet statt im Fehlerfenster mit der Adresse zu enden.
+        if not sYear.isdigit() or len(sYear) != 4 or not 1900 <= int(sYear) <= time.localtime().tm_year + 1:
+            cGui().showInfo('xStream', cConfig().getLocalizedString(30563))
+            return
+        win.setProperty('xstream.streamcloud.lastYear', sYear)
+    showEntries(URL_YEAR % sYear)
+
+
+def _searchUrl(sSearchText, iPage=1):
+    """Adresse einer Suchseite, immer aus dem ROHEN Begriff gebaut (Regel: roh im Parameter, kodiert
+    am Abruf); die Folgeseiten blaettern ueber `page` wie der Vorwaerts-Link der Seite."""
+    sUrl = URL_SEARCH % cParser.quote(sSearchText)
+    if iPage > 1:
+        sUrl += '&page=%d' % iPage
+    return sUrl
+
+
+def _searchAny(sSearchText, bQuiet):
+    """Rueckfall der Suche ueber /suche (ODER, hoechstens 60 Titel, keine Folgeseite): nur Karten, deren
+    Titel den Begriff enthaelt (cParser.searchTitle, Interpunktion und Umlaute angeglichen)."""
+    sHtmlContent = cRequestHandler(_requestUrl(URL_SEARCH_ANY % cParser.quote(sSearchText)), ignoreErrors=bQuiet).request()
+    return [c for c in _cards(sHtmlContent) if cParser.searchTitle(sSearchText, c[1])]
+
+
+def _pages(sHtmlContent):
+    """(aktuelle Seite, letzte Seite) aus „Seite x von y" der Zaehlzeile, sonst (0, 0) — Kinofilme nennt kein Ende."""
+    mConta = _RE_CONTA.search(sHtmlContent or '')
+    mPages = _RE_PAGES.search(cUtil.removeHtmlTags(mConta.group(1))) if mConta else None
+    return (int(mPages.group(1)), int(mPages.group(2))) if mPages else (0, 0)
+
+
+def _nextUrl(sHtmlContent):
+    """Volle Adresse der Folgeseite aus dem Vorwaerts-Link „weitere Titel", sonst ''.
+
+    Die Seite bietet den Link auch auf der letzten Seite an, wenn die Zahl der Titel genau ein Vielfaches von 60
+    ist (03.11.2026: Musik 840 Titel, „Seite 14 von 14" mit Link auf eine leere Seite 15) — deshalb gilt der Link
+    nur, solange die Zaehlzeile derselben Antwort eine weitere Seite nennt (ohne Zaehlzeile allein der Link)."""
+    iPage, iLast = _pages(sHtmlContent)
+    if iLast and iPage >= iLast:
+        return ''
+    mMore = _RE_MORE.search(sHtmlContent or '')
+    mHref = _RE_HREF.search(mMore.group(1)) if mMore else None
+    return _absoluteUrl(cUtil.unescape(mHref.group(1))) if mHref else ''
 
 
 def showEntries(entryUrl=False, sGui=False, sSearchText=False):
     oGui = sGui if sGui else cGui()
     params = ParameterHandler()
-    if not entryUrl: entryUrl = params.getValue('sUrl')
-    # Adressen mit Leerzeichen oder Umlaut kommen aus dem Parameter-Durchlauf
-    # unkodiert zurueck -> direkt vor dem Request kodieren (deckt auch die
-    # Naechste-Seite-URL ab). Pfadstruktur bleibt erhalten.
-    entryUrl = cParser.urlEncode(entryUrl, safe="/:?=&%#")
-    oRequest = cRequestHandler(entryUrl, ignoreErrors=(sGui is not False))
+    if not sSearchText:
+        # Weiter-Seite der Suche: Kodi ruft die Funktion neu auf, Begriff und Seitenzahl stehen dann
+        # nur noch im Parameter
+        sSearchText = params.getValue('sSearchText') or False
+    iPage = 1
+    if sSearchText:
+        iPage = int(params.getValue('page') or 1)
+        entryUrl = _searchUrl(sSearchText, iPage)
+    elif not entryUrl:
+        entryUrl = params.getValue('sUrl')
+    # Eine Folgeseite der Suche meldet Fehler nicht als Fenster (wie beim Blaettern „Kein Eintrag
+    # gefunden"), die globale Suche bleibt still
+    oRequest = cRequestHandler(_requestUrl(entryUrl), ignoreErrors=(sGui is not False or iPage > 1))
     sHtmlContent = oRequest.request()
-    pattern = 'class="thumb".*?title="([^"]+).*?href="([^"]+).*?src="([^"]+).*?_year">([^<]+)'
-    isMatch, aResult = cParser.parse(sHtmlContent, pattern)
-    if isMatch and sSearchText:
-        # In der globalen Suche laufen alle Sites gleichzeitig, deshalb dort nur
-        # fuenf Seiten je Site. Mit zehn dauerte eine breite Suche ueber Mobilfunk
-        # 19 s ("koenig", 412 Treffer) — der Einzelaufruf der Site bleibt bei zehn,
-        # dort laeuft nur eine Seite zur Zeit.
-        aResult += _fetchMoreSearchPages(entryUrl, pattern, iMaxPages=5 if sGui else 10)
-    if not isMatch:
+    aCards = _cards(sHtmlContent)
+    bAny = False
+    if not aCards and sSearchText and iPage == 1 and sHtmlContent and sHtmlContent not in REQUEST_ERRORS:
+        # /discover fand die Wortfolge nicht (andere Schreibweise der Seite): einmal /suche, ohne Weiter
+        aCards = _searchAny(sSearchText, sGui is not False)
+        bAny = True
+    if not aCards:
         if not sGui: oGui.showInfo()
         return
-
-    total = len(aResult)
-    iShown = 0
-    # Die Serien-Erkennung unten braucht je Eintrag die Detailseite. Einzeln in
-    # der Schleife abgerufen summiert sich das auf der Leitung (Latenz mal
-    # Listenlaenge) — gemessen bei 0,30 s Latenz 8,87 s fuer eine Kategorie mit
-    # zwoelf Titeln, in der globalen Suche 17,8 s ueber alle Ergebnisseiten.
-    # Deshalb werden sie VOR der Schleife parallel geholt; die Einzelpruefung
-    # trifft danach den HTML-Cache und loest keinen zweiten Netzabruf aus.
-    # Gefiltert wird vorher, damit keine Seite fuer einen Titel geholt wird, den der
-    # Suchfilter ohnehin verwirft.
-    _prefetchDetails([u for n, u, _t, _y in aResult
-                      if not sSearchText or cParser.searchTitle(sSearchText, n)])
-    for sName, sUrl, sThumbnail, sYear in aResult:
-        if sSearchText and not cParser.searchTitle(sSearchText, sName):
-            continue
-        if sThumbnail[0] == '/':
-            sThumbnail = sThumbnail[1:]
-        # In den Parameter gehoert die VOLLE Adresse, nicht der relative Pfad:
-        # showSeasons und showEpisodes setzen den Wert unveraendert als Bild, und
-        # ein relativer Pfad laesst sich dort nicht laden - die Staffelauswahl blieb
-        # ohne Cover, sobald man ueber Suche, Aktuelle Releases, Filme oder Genre in
-        # eine Serie ging (belegt 04.09.2026 an "Law & Order"). Ueber showSeries war
-        # das Cover da, weil dort schon die volle Adresse weitergereicht wird.
-        sThumbAbs = URL_MAIN + sThumbnail
-
-        # Film/Serie via Detail-Seite erkennen (zuverlässigste Quelle bei streamcloud)
-        # xStream's Request-Cache macht Wiederholungen instant
-        isTvshow = False
-        try:
-            detailHtml = cRequestHandler(sUrl, ignoreErrors=True).request()   # Hilfsabruf, siehe _prefetchDetails
-            # Serie erkannt wenn data-num="NxN" (natives DLE-Pattern) ODER das
-            # Plattform-Snippet der Seite eine Serie meldet (_hasMeinecloudSerial).
-            # Streamcloud hat seine Serien auf die Plattform umgestellt (kein
-            # data-num mehr) — ohne diesen Marker wuerden Plattform-Serien wie
-            # "The Rookie" als Film erkannt und direkt in einen Stream springen
-            # statt in die Serie.
-            isSeriesMatch, _ = cParser.parseSingleResult(detailHtml, r'data-num="\d+x\d+"')
-            if not isSeriesMatch:
-                isSeriesMatch = _hasMeinecloudSerial(detailHtml)
-            if isSeriesMatch:
-                isTvshow = True
-        except Exception:
-            isTvshow = False
-
-        oGuiElement = cGuiElement(sName, SITE_IDENTIFIER, 'showSeasons' if isTvshow else 'showHosters')
-        oGuiElement.setThumbnail(sThumbAbs)
-        oGuiElement.setMediaType('tvshow' if isTvshow else 'movie')
-        if sYear: oGuiElement.setYear(sYear)  # Aki: reaktiviert - heutige tmdb/api.py hat getrennte year-Parameter
-        params.setParam('entryUrl', sUrl)
-        params.setParam('sName', sName)
-        params.setParam('sThumbnail', sThumbAbs)
-        params.setParam('sYear', sYear)
-        oGui.addFolder(oGuiElement, params, isTvshow, total)
-        iShown += 1
-        
-    # Kamen Treffer an, wurden aber ALLE vom Titelfilter verworfen, stand hier
-    # ein leeres Verzeichnis ohne Hinweis (belegt mit "koenig", Audit 01.09.2026).
-    # BEWUSST VOR dem Pagination-Block: dessen Bedingung schliesst die Suche aus,
-    # die Meldung wuerde dort nie erreicht. Gleiches Muster wie in hdfilme.
-    if not sGui and not iShown:
-        oGui.showInfo()
-
-    if not sGui and not sSearchText:
-        isMatchNextPage, sNextUrl = cParser.parseSingleResult(sHtmlContent, 'href="([^"]+)">Next')
-        # Seitenlage fuer den Weiter-Eintrag: die hoechste Zahl der Blaetterleiste ist
-        # das Listenende — bei langen Listen steht sie hinter der "…"-Auslassung, bei
-        # kurzen sind ohnehin alle Zahlen da (gemessen 04.09.2026 gegen die bisektierten
-        # Enden, kurz wie lang). Die aktive Seite steht als <span> in derselben Leiste.
-        sPageInfo = ''
-        isMatchSiteSearch, sHtmlContainer = cParser.parseSingleResult(sHtmlContent, 'class="wp-pagenavi(.*?)Next')
-        if isMatchSiteSearch:
-            isMatchCur, sCurrent = cParser.parseSingleResult(sHtmlContainer, r'<span[^>]*>(\d+)</span>')
-            aPages = [int(x) for x in re.findall(r'>(\d{1,6})<', sHtmlContainer)]
-            if isMatchCur and aPages:
-                sPageInfo = cGui.pageInfo(sCurrent, max(aPages))
-
-        if isMatchNextPage:
-            params.setParam('sUrl', sNextUrl)
-            oGui.addNextPage(SITE_IDENTIFIER, 'showEntries', params, sPageInfo)
-
-        oGui.setView('movies')
-        oGui.setEndOfDirectory()
-
-
-def showSeries(entryUrl=False, sGui=False, sSearchText=False): # Neu eingebaut da auf der Webseite nicht erkennbar ist was Serien sind und was nicht
-    oGui = sGui if sGui else cGui()
-    params = ParameterHandler()
-    isTvshow = True
-    if not entryUrl: entryUrl = params.getValue('sUrl')
-    # Adressen mit Leerzeichen oder Umlaut kommen aus dem Parameter-Durchlauf
-    # unkodiert zurueck -> direkt vor dem Request kodieren (deckt auch die
-    # Naechste-Seite-URL ab). Pfadstruktur bleibt erhalten.
-    entryUrl = cParser.urlEncode(entryUrl, safe="/:?=&%#")
-    oRequest = cRequestHandler(entryUrl, ignoreErrors=(sGui is not False))
-    sHtmlContent = oRequest.request()
-    pattern = 'class="thumb".*?title="([^"]+).*?href="([^"]+).*?src="([^"]+).*?_year">([^<]+)'
-    isMatch, aResult = cParser.parse(sHtmlContent, pattern)
-    if not isMatch:
-        if not sGui: oGui.showInfo()
+    # Listenadresse und Suchstand gehoeren nicht an die Eintraege (die Folgeseite bekommt sie unten neu)
+    params.setParam('sUrl', '')
+    params.setParam('sSearchText', '')
+    params.setParam('page', '')
+    _addCards(oGui, params, aCards)
+    if sGui:
         return
-
-    total = len(aResult)
-    iShown = 0
-    for sName, sUrl, sThumbnail, sYear in aResult:
-        if sSearchText and not cParser.searchTitle(sSearchText, sName):
-            continue
-        if sThumbnail[0] == '/':
-            sThumbnail = sThumbnail[1:]
-        sThumbAbs = URL_MAIN + sThumbnail
-        oGuiElement = cGuiElement(sName, SITE_IDENTIFIER, 'showSeasons')
-        oGuiElement.setThumbnail(sThumbAbs)
-        oGuiElement.setMediaType('tvshow')
-        if sYear: oGuiElement.setYear(sYear)  # Aki: reaktiviert - heutige tmdb/api.py hat getrennte year-Parameter
-        params.setParam('entryUrl', sUrl)
-        params.setParam('sName', sName)
-        params.setParam('sThumbnail', sThumbAbs)
-        params.setParam('sYear', sYear)
-
-        oGui.addFolder(oGuiElement, params, isTvshow, total)
-        iShown += 1
-
-    # Kamen Treffer an, wurden aber ALLE vom Titelfilter verworfen, stand hier
-    # ein leeres Verzeichnis ohne Hinweis (belegt mit "koenig", Audit 01.09.2026).
-    # BEWUSST VOR dem Pagination-Block: dessen Bedingung schliesst die Suche aus,
-    # die Meldung wuerde dort nie erreicht. Gleiches Muster wie in hdfilme.
-    if not sGui and not iShown:
-        oGui.showInfo()
-
-    if not sGui and not sSearchText:
-        # Beleg ist der Vorwaerts-Link der Seite — dasselbe Muster wie in showEntries.
-        # Das frueher hier stehende Muster verlangte >\d[1-9]+< und scheiterte damit an
-        # jeder letzten Seitenzahl, die ab der zweiten Stelle eine 0 traegt (aktuell 506):
-        # der Weiter-Eintrag fiel komplett weg und die Serienliste endete nach der ersten
-        # Seite, obwohl die Quelle ueber 500 Seiten fuehrt. Umgekehrt griff es auf der
-        # letzten Seite, wo gar keine Folgeseite mehr existiert.
-        isMatchNextPage, sNextUrl = cParser.parseSingleResult(sHtmlContent, 'href="([^"]+)">Next')
-        # Seitenlage fuer den Weiter-Eintrag: die hoechste Zahl der Blaetterleiste ist
-        # das Listenende — bei langen Listen steht sie hinter der "…"-Auslassung, bei
-        # kurzen sind ohnehin alle Zahlen da (gemessen 04.09.2026 gegen die bisektierten
-        # Enden, kurz wie lang). Die aktive Seite steht als <span> in derselben Leiste.
-        sPageInfo = ''
-        isMatchSiteSearch, sHtmlContainer = cParser.parseSingleResult(sHtmlContent, 'class="wp-pagenavi(.*?)Next')
-        if isMatchSiteSearch:
-            isMatchCur, sCurrent = cParser.parseSingleResult(sHtmlContainer, r'<span[^>]*>(\d+)</span>')
-            aPages = [int(x) for x in re.findall(r'>(\d{1,6})<', sHtmlContainer)]
-            if isMatchCur and aPages:
-                sPageInfo = cGui.pageInfo(sCurrent, max(aPages))
-        if isMatchNextPage:
-            params.setParam('sUrl', sNextUrl)
-            oGui.addNextPage(SITE_IDENTIFIER, 'showSeries', params, sPageInfo)
-        oGui.setView('tvshows')
-        oGui.setEndOfDirectory()
-
-
-# Poster der Detailseite: genau ein <img itemprop="image" src="/uploads/thumb/300x450-…">
-# (DLE-Fullstory, gemessen 03.10.2026 an 60 von 60 Detailseiten, Filme wie Serien). Ein
-# og:image-Meta fuehrt die Seite NICHT. Gebraucht, wenn die Liste kein Cover mitliefert
-# (Neu auf der Seite = Updates-Block ohne Bilder) — die Detailseite ist dann ohnehin geladen,
-# es kostet keinen Abruf.
-_RE_DETAIL_COVER = re.compile(r'<img\b[^>]*\bitemprop="image"[^>]*>', re.I)
+    # Weiter nur mit dem Vorwaerts-Link der Seite als Beleg; die Suche traegt Begriff und Seitenzahl
+    # (eine Seite je Aufruf, die globale Suche nur Seite 1), die Listen die Adresse der Folgeseite
+    sNextUrl = '' if bAny else _nextUrl(sHtmlContent)
+    if sNextUrl:
+        nextParams = ParameterHandler()
+        if sSearchText:
+            nextParams.setParam('sSearchText', sSearchText)
+            nextParams.setParam('page', iPage + 1)
+        else:
+            nextParams.setParam('sUrl', sNextUrl)
+        oGui.addNextPage(SITE_IDENTIFIER, 'showEntries', nextParams, cGui.pageInfo(*_pages(sHtmlContent)))
+    oGui.setView('tvshows' if all(c[5] for c in aCards) else 'movies')
+    oGui.setEndOfDirectory()
 
 
 def _detailCover(sHtmlContent):
-    """Volle Adresse des Posters aus dem Detail-HTML, sonst ''."""
-    m = _RE_DETAIL_COVER.search(sHtmlContent or '')
-    mSrc = re.search(r'\bsrc="([^"]+)"', m.group(0)) if m else None
-    if not mSrc:
-        return ''
-    sCover = mSrc.group(1)
-    if sCover.startswith('//'):
-        return 'https:' + sCover
-    return sCover if sCover.startswith('http') else URL_MAIN.rstrip('/') + '/' + sCover.lstrip('/')
+    """Volle Adresse des Posters aus dem Detail-HTML, sonst ''. Gebraucht, wenn kein Cover mitkommt
+    (Aufruf ohne sThumbnail, z.B. alter Favorit) — die Detailseite ist dann ohnehin geladen."""
+    mCover = _RE_DETAIL_COVER.search(sHtmlContent or '')
+    return _absoluteUrl(cUtil.unescape(mCover.group(1))) if mCover else ''
 
 
 def showSeasons():
-    """Staffel-Ebene fuer Serien. Native DLE-Serien liefern die Staffeln ueber
-    data-num="SxE", meinecloud-Serien ueber die Plattform-API (resolveMeinecloudSerial). Bei genau einer Staffel
-    wird die Ordner-Ebene uebersprungen (direkt in die Episoden, HTML/mc werden
-    durchgereicht — kein zweiter Request/Lookup)."""
+    """Staffel-Ebene: die Serien kommen allein ueber die Plattform-API (resolveMeinecloudSerial, die
+    IMDb-ID liest platformImdbId aus dem Plattform-Player der Detailseite, auch die verlaengerten IDs).
+    Bei genau einer Staffel wird die Ordner-Ebene
+    uebersprungen (direkt in die Episoden, HTML und Plattform-Folgen werden durchgereicht — kein
+    zweiter Abruf)."""
     params = ParameterHandler()
     entryUrl = params.getValue('entryUrl')
     sName = params.getValue('sName') if params.exist('sName') else ''
     sThumbnail = params.getValue('sThumbnail')
-    sHtmlContent = cRequestHandler(entryUrl).request()
+    sHtmlContent = cRequestHandler(_requestUrl(entryUrl)).request()
     if not sThumbnail:
-        # Liste ohne Cover (Neu auf der Seite): Poster der Detailseite, und als Parameter
-        # weiter, damit auch der Klick auf eine Staffel es hat
+        # Kein Cover mitgekommen (z.B. alter Favorit): Poster der Detailseite, und als Parameter weiter,
+        # damit auch der Klick auf eine Staffel es hat
         sThumbnail = _detailCover(sHtmlContent)
         if sThumbnail:
             params.setParam('sThumbnail', sThumbnail)
-
-    # Native data-num Staffeln (erste Zahl vor dem 'x')
-    isMatch, aNum = cParser.parse(sHtmlContent, r'data-num="(\d+)x\d+"')
-    seasons = sorted(set(int(s) for s in aNum)) if isMatch else []
-
-    # meinecloud-Serie: Staffeln aus der Plattform-API
     aMc = []
-    if not seasons:
-        sImdbId = platformImdbId(sHtmlContent)
-        if sImdbId:
-            aMc = resolveMeinecloudSerial(sImdbId, referer=entryUrl, siteHtml=sHtmlContent)
-            seasons = sorted(set(ep['season'] for ep in aMc))
-
+    sImdbId = platformImdbId(sHtmlContent)
+    if sImdbId:
+        aMc = resolveMeinecloudSerial(sImdbId, referer=entryUrl, siteHtml=sHtmlContent)
+    seasons = sorted(set(ep['season'] for ep in aMc))
     if not seasons:
         cGui().showInfo()
         return
@@ -570,105 +415,58 @@ def showSeasons():
 def showEpisodes(staffel=None, htmlContent=None, mcEpisodes=None):
     params = ParameterHandler()
     entryUrl = params.getValue('entryUrl')
-    sTVShowTitle = params.getValue('sName') if params.exist('sName') else ''   # sName ist unten die Folgenkennung der Schleife
+    sTVShowTitle = params.getValue('sName') if params.exist('sName') else ''
     sThumbnail = params.getValue('sThumbnail')
-    # staffel/htmlContent/mcEpisodes werden von showSeasons durchgereicht
-    # (Single-Staffel-Skip), sonst kommt die Staffel aus dem Parameter
-    # (Klick auf einen Staffel-Ordner).
+    # staffel/htmlContent/mcEpisodes reicht showSeasons durch (eine Staffel), sonst kommt die Staffel
+    # aus dem Parameter (Klick auf einen Staffel-Ordner = eigener Aufruf, die Plattform wird neu gefragt)
     if staffel is None and params.exist('staffel'):
         staffel = params.getValue('staffel')
     sStaffel = str(staffel) if staffel is not None else None
-    if htmlContent is not None:
-        sHtmlContent = htmlContent
+    sHtmlContent = htmlContent if htmlContent is not None else cRequestHandler(_requestUrl(entryUrl)).request()
+    if mcEpisodes is not None:
+        aEpisodes = list(mcEpisodes)
     else:
-        sHtmlContent = cRequestHandler(entryUrl).request()
-
-    isMatch, aResult = cParser.parse(sHtmlContent, 'data-num="([^"]+)')
-
-    # meinecloud-Episoden: durchgereicht (von showSeasons) oder — falls native
-    # Pattern leer — neu laden (Stranger Things etc., Daten nur ueber die Plattform-API).
-    aMeinecloudEpisodes = list(mcEpisodes) if mcEpisodes else []
-    if not isMatch and not aMeinecloudEpisodes:
         sImdbId = platformImdbId(sHtmlContent)
-        if sImdbId:
-            aMeinecloudEpisodes = resolveMeinecloudSerial(sImdbId, referer=entryUrl, siteHtml=sHtmlContent)
-    if aMeinecloudEpisodes and not isMatch:
-        # Format wie Site-Pattern: "<staffel>x<episode>" — kompatibel zu showHosters
-        aResult = ['%dx%d' % (ep['season'], ep['episode']) for ep in aMeinecloudEpisodes]
-
-    if not aResult:
+        aEpisodes = resolveMeinecloudSerial(sImdbId, referer=entryUrl, siteHtml=sHtmlContent) if sImdbId else []
+    if sStaffel is not None:
+        aEpisodes = [ep for ep in aEpisodes if str(ep['season']) == sStaffel]
+    if not aEpisodes:
         cGui().showInfo()
         return
 
-    # Auf die gewaehlte Staffel filtern (native + meinecloud synchron halten).
-    if sStaffel is not None:
-        if aMeinecloudEpisodes:
-            filtered = [(ep, sNum) for ep, sNum in zip(aMeinecloudEpisodes, aResult) if str(ep['season']) == sStaffel]
-            aMeinecloudEpisodes = [ep for ep, sNum in filtered]
-            aResult = [sNum for ep, sNum in filtered]
-        else:
-            aResult = [sNum for sNum in aResult if sNum.split('x')[0] == sStaffel]
-        if not aResult:
-            cGui().showInfo()
-            return
-
-    # Falls kein Parent-Thumbnail uebergeben (z.B. aus showLatest): Poster der Detailseite
+    # Falls kein Parent-Thumbnail uebergeben (z.B. alter Favorit): Poster der Detailseite
     if not sThumbnail:
         sThumbnail = _detailCover(sHtmlContent)
 
-    total = len(aResult)
-    for i, sName in enumerate(aResult):
-        # meinecloud-Mode: Label mit Episodentitel anreichern
-        if aMeinecloudEpisodes:
-            ep = aMeinecloudEpisodes[i]
-            sLabel = 'S%dE%d — %s' % (ep['season'], ep['episode'], ep['title'])
-        else:
-            sLabel = sName
-        oGuiElement = cGuiElement(sLabel, SITE_IDENTIFIER, 'showHosters')
+    total = len(aEpisodes)
+    for ep in aEpisodes:
+        # Eine Form auf allen Sites ("S01E11 - Titel", cParser.episodeLabel) mit dem Folgentitel der Plattform
+        oGuiElement = cGuiElement(cParser.episodeLabel(ep['season'], ep['episode'], ep['title']), SITE_IDENTIFIER, 'showHosters')
         if sThumbnail:
             oGuiElement.setThumbnail(sThumbnail)
         oGuiElement.setMediaType('episode')
         if sTVShowTitle: oGuiElement.setTVShowTitle(sTVShowTitle)
-        if aMeinecloudEpisodes:
-            oGuiElement.setSeason(ep['season'])
-            oGuiElement.setEpisode(ep['episode'])
+        oGuiElement.setSeason(ep['season'])
+        oGuiElement.setEpisode(ep['episode'])
         params.setParam('entryUrl', entryUrl)
-        params.setParam('episode', sName)
-        # meinecloud-Mode: alle Quellen der Folge mitgeben (ein Parameter, packSourceUrls),
-        # damit showHosters() ohne weiteren Lookup aufloest
-        if aMeinecloudEpisodes:
-            params.setParam('meinecloud_url', packSourceUrls(aMeinecloudEpisodes[i]['urls']))
+        # alle Quellen der Folge mitgeben (ein Parameter, packSourceUrls), damit showHosters() ohne
+        # weiteren Abruf aufloest
+        params.setParam('meinecloud_url', packSourceUrls(ep['urls']))
         cGui().addFolder(oGuiElement, params, False, total)
     cGui().setView('episodes')
     cGui().setEndOfDirectory()
 
 
-def _resolvePlayerWrapper(wrapperUrl):
-    """Löst einen streamcloud-internen /player/... Wrapper zu einer echten Hoster-URL auf."""
-    try:
-        oRequest = cRequestHandler(wrapperUrl)
-        oRequest.addHeaderEntry('Referer', URL_MAIN)
-        wrapperHtml = oRequest.request()
-        # Innerhalb des Wrappers stehen iframes oder direkte Hoster-URLs
-        # Pattern: iframe src=, oder data-link= mit http(s)
-        isMatch, aResult = cParser.parse(wrapperHtml, r'<iframe[^>]+src="(https?://[^"]+)"')
-        if isMatch and aResult:
-            return aResult[0]
-        isMatch, aResult = cParser.parse(wrapperHtml, r'data-link="(https?://[^"]+)"')
-        if isMatch and aResult:
-            return aResult[0]
-    except Exception:
-        pass
-    return None
-
-
 def showHosters():
+    # Endet ohne Hoster OHNE eigene Meldung: hoster.py meldet die leere Liste selbst mit „Stream //
+    # Hoster nicht verfuegbar" (30141), eine eigene Meldung waere die zweite fuer denselben Klick.
     hosters = []
-    sUrl = ParameterHandler().getValue('entryUrl')
-    sMeinecloudUrl = ParameterHandler().getValue('meinecloud_url') if ParameterHandler().exist('meinecloud_url') else ''
+    params = ParameterHandler()
+    sUrl = params.getValue('entryUrl')
+    sMeinecloudUrl = params.getValue('meinecloud_url') if params.exist('meinecloud_url') else ''
 
-    # meinecloud-Mode: die Adressen kommen direkt aus showEpisodes (alle Quellen der
-    # Folge in einem Parameter, unpackSourceUrls), kein DLE-HTML-Parsing noetig.
+    # Folge: die Adressen kommen direkt aus showEpisodes (alle Quellen der Folge in einem Parameter,
+    # unpackSourceUrls), kein Abruf der Seite noetig
     if sMeinecloudUrl:
         for sMcUrl in unpackSourceUrls(sMeinecloudUrl):
             _fixedUrl = ('https:' + sMcUrl) if sMcUrl.startswith('//') else sMcUrl
@@ -679,87 +477,13 @@ def showHosters():
             hosters.append('getHosterUrl')
         return hosters
 
-    sHtmlContent = cRequestHandler(sUrl, caching=False).request()
-    if ParameterHandler().exist('episode'): #kommt aus showSeries
-        episode = ParameterHandler().getValue('episode')
-        # Ganzen <li>-Block für diese Episode holen (primary + alle mirrors)
-        # Struktur: <li><a data-num="NxN">...</a><div class="mirrors"><a data-m="..." data-link="...">...</a>...</div></li>
-        blockPattern = r'<li>\s*<a [^>]*data-num="{0}".*?</li>'.format(episode)
-        isMatch, sBlock = cParser.parseSingleResult(sHtmlContent, blockPattern)
-        if not isMatch:
-            cGui().showInfo()
-            return
-        # Native DLE-Serien (data-num) sind auf der Seite seit der Umstellung auf meinecloud
-        # kaum noch zu finden (Stichproben 02.09.2026: keine) — dieser Zweig bleibt fuer den
-        # Altbestand. Echte HTML-Kommentare (<!-- ... -->) entfernen damit disablte Mirrors rausfliegen.
-        # Aber NICHT <!--- ... ---> (drei Dashes) matchen — Streamcloud nutzt das Format
-        # fuer "soft-disabled" Mirrors (z.B. Dropload). Falls Site-Owner sie reaktiviert,
-        # sind sie automatisch verfuegbar ohne Code-Touch.
-        sBlock = re.sub(r'<!--(?!-)(.*?)(?<!-)-->', '', sBlock, flags=re.DOTALL)
-        # Alle data-link sammeln (externe + interne Player-Wrapper)
-        isMatch, aResult = cParser.parse(sBlock, r'data-link="([^"]+)"')
-        if not isMatch:
-            cGui().showInfo()
-            return
-        # Interne /player/... URLs auflösen, externe direkt übernehmen
-        resolvedLinks = []
-        seen = set()
-        for link in aResult:
-            if link.startswith('/'):
-                # Interner Player-Wrapper → zu echter Hoster-URL auflösen
-                fullWrapperUrl = URL_MAIN + link.lstrip('/')
-                realUrl = _resolvePlayerWrapper(fullWrapperUrl)
-                if realUrl and realUrl not in seen:
-                    seen.add(realUrl)
-                    resolvedLinks.append(realUrl)
-            elif link.startswith('http') and link not in seen:
-                seen.add(link)
-                resolvedLinks.append(link)
-        aResult = resolvedLinks
-        if not aResult:
-            cGui().showInfo()
-            return
-        isMatch = True
-    else:
-        # Aufs Tag begrenzt: der alte offene Schnitt ('<iframe.*?allowfull') lief
-        # bei einem iframe OHNE allowfull-Attribut bis zum naechsten allowfull im
-        # Dokument weiter und haette dann ein fremdes src gegriffen — dieselbe
-        # Fallenklasse wie ein offener serial_iframe-Schnitt. Die Player-iframes
-        # der Seite tragen allowfullscreen im Tag, fuer die aendert sich nichts.
-        pattern = '<iframe[^>]*allowfull'
-        isMatch, sHtmlContainer = cParser.parseSingleResult(sHtmlContent, pattern)
-        if isMatch:
-            isMatch, aResult = cParser.parse(sHtmlContainer, 'src="([^"]+)')
-            try:
-                sUrl = aResult[0]
-            except:
-                pass
-        if not isMatch:
-            cGui().showInfo()
-            return
-        if isPlatformUrl(sUrl):
-            # Plattform-iframe (meinecloud/devideosrc): Laden und Parsen macht
-            # resolveMeinecloud() zentral — inklusive API-Zweig fuer den neuen
-            # DEVIDEOSRC-Player und caching=False, weil die Plattform Hoster
-            # rotiert. Der Selbst-Parse darunter griffe beim neuen Player
-            # (keine data-links im HTML) ins Leere. Das expandHosterList am
-            # Konvergenzpunkt unten laeuft fuer diese schon finalen URLs als
-            # reiner Dedupe-Durchlauf ohne weiteren Netzabruf.
-            aResult = expandHosterList([sUrl], referer=URL_MAIN)
-            isMatch = bool(aResult)
-        else:
-            sHtmlContent = cRequestHandler(sUrl).request()
-            isMatch, aResult = cParser.parse(sHtmlContent, 'data-link="([^"]+)')
-    if isMatch:
-        sQuality = '720'
-        # Meinecloud-Wrapper expandieren: streamcloud versteckt zusaetzliche Hoster
-        # hinter meinecloud-URLs (siehe resources/lib/wrappers/meinecloud.py). Page liefert eigene data-link Liste.
-        # Greift fuer beide Modi (Episode + Movie konvergieren hier).
-        aResult = expandHosterList(aResult, referer=URL_MAIN)
-
-        for sUrl in aResult:
-            if not sUrl or not sUrl.strip(): continue   # Leere data-link skippen (z.B. meinecloud "andere Server" Toggle)
-            hoster = buildHosterFromUrl(sUrl, sQuality=sQuality, includeQualitySuffix=True)
+    # Film: das Plattform-iframe der Detailseite; Laden und Aufloesen macht resolveMeinecloud() zentral
+    # (Token-Seite plus JSON-API der Plattform, ohne Cache)
+    sHtmlContent = cRequestHandler(_requestUrl(sUrl), caching=False).request()
+    aPlatform = [s for s in _RE_IFRAME.findall(sHtmlContent or '') if isPlatformUrl(s)]
+    if aPlatform:
+        for sHosterUrl in expandHosterList(aPlatform[:1], referer=URL_MAIN):
+            hoster = buildHosterFromUrl(sHosterUrl, sQuality='720', includeQualitySuffix=True)
             if hoster:
                 hosters.append(hoster)
     if hosters:
@@ -775,14 +499,13 @@ def showSearch():
     win = xbmcgui.Window(10000)
     sSearchText = win.getProperty('xstream.streamcloud.lastSearchText')
     if not sSearchText:
-        sSearchText = cGui().showKeyBoard(sHeading=cConfig().getLocalizedString(30287))
+        sSearchText = cGui().showKeyBoard(sHeading=cConfig().getLocalizedString(30281))
         if not sSearchText: return
         win.setProperty('xstream.streamcloud.lastSearchText', sSearchText)
+    # Das Verzeichnis schliesst showEntries selbst ab — so wie bei jeder Weiter-Seite der Suche, die
+    # Kodi direkt dort aufruft.
     _search(False, sSearchText)
-    cGui().setEndOfDirectory()
 
 
 def _search(oGui, sSearchText):
-    showEntries(URL_SEARCH % cParser.quotePlus(sSearchText), oGui, sSearchText)
-
-
+    showEntries(_searchUrl(sSearchText), oGui, sSearchText)

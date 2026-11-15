@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # Python 3
 # ------------------------------------------------------------------------------
-# kellerkino.com — reine Filmseite (WordPress, alles serverseitig gerendert).
+# kellerkino — reine Filmseite (WordPress, alles serverseitig gerendert).
 #
 # Die Hosterlinks stehen fertig im HTML der Detailseite: je Player-Reiter ein
 # Panel (data-nfo-player-panel / data-nfo-player-label) mit einem <template>,
@@ -37,7 +37,11 @@ STATUS = cConfig().getSetting('plugin_' + SITE_IDENTIFIER + '_status')
 ACTIVE = cConfig().getSetting('plugin_' + SITE_IDENTIFIER)
 URL_MAIN = 'https://' + DOMAIN
 URL_ARCHIVE = URL_MAIN + '/archiv/'
-URL_IMDB = URL_MAIN + '/imdb-rating/'
+# IMDb-Seite mit ihrem Sortier-Reiter "Jahr ↓" statt der Wertungsfolge (so entschieden am 18.10.2026):
+# nach Wertung stehen immer dieselben Klassiker oben, nach Jahr die neuesten Filme. Die
+# Seite fuehrt dort den ganzen Bestand wie das Archiv (gemessen 18.10.2026), die Wertung
+# steht weiter auf jeder Karte und geht ins Info. Weiter-Links der Leiste tragen ?sort=year.
+URL_IMDB = URL_MAIN + '/imdb-rating/?sort=year'
 URL_CATEGORIES = URL_MAIN + '/kategorien/'
 URL_LETTERS = URL_MAIN + '/filme-a-z/'
 # Suche ueber den WordPress-Permalink /search/<begriff>/ statt /?s=<begriff>: seit
@@ -105,8 +109,8 @@ def load():
 
 
 def _requestUrl(sUrl):
-    # Kodiert unmittelbar vor dem Abruf — der Parameterweg macht jede Kodierung
-    # rueckgaengig (unquote_plus). Anders als sonst ist '#' hier NICHT sicher:
+    # Kodiert unmittelbar vor dem Abruf, an EINER Stelle (bis zum 02.11.2026 machte
+    # der Parameterweg jede Kodierung rueckgaengig, unquote_plus). Anders als sonst ist '#' hier NICHT sicher:
     # der A-Z-Abschnitt "#" heisst in der Adresse ?dmt_letter=# und muss als
     # %23 raus, sonst streicht urllib alles ab '#' und die Seite liefert
     # Buchstabe A. '+' ebenso nicht, damit ein Suchbegriff mit Pluszeichen
@@ -265,7 +269,13 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False):
     if not entryUrl:
         entryUrl = params.getValue('sUrl')
     sRow = params.getValue('sRow')
-    sHtmlContent = _request(entryUrl, ignoreErrors=(sGui is not False))
+    # Weiter-Seite der Suche (der Begriff kommt dann nur ueber den Parameter): ein
+    # Fehler dort wird nicht als Fenster gemeldet, es gilt wie beim Blaettern „Kein
+    # Eintrag gefunden". Anlass 21.10.2026: die Blaetterleiste der Suche verspricht
+    # eine Seite mehr, als es gibt, sobald die letzte Seite voll ist ("love", "star",
+    # "war" — 7 von 10 breiten Begriffen, im Browser dieselbe 404-Seite).
+    bFolgeseite = not sSearchText and bool(params.getValue('sSearchText'))
+    sHtmlContent = _request(entryUrl, ignoreErrors=(sGui is not False or bFolgeseite))
     if sRow:
         # Reihe der Startseite: nur der Block dieser Reihe, kein Blaettern.
         params.setParam('sRow', '')
@@ -299,15 +309,17 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False):
 
     if not sGui:
         if not sRow:
-            _addNextPage(oGui, sHtmlContent)
+            _addNextPage(oGui, sHtmlContent, sSearchText or params.getValue('sSearchText'))
         oGui.setView('movies')
         oGui.setEndOfDirectory()
 
 
-def _addNextPage(oGui, sHtmlContent):
+def _addNextPage(oGui, sHtmlContent, sSearchText=False):
     # Beleg fuer die Folgeseite ist der Weiter-Link der Leiste selbst (auf der
     # letzten Seite fehlt er). Die Seitenlage kommt aus derselben Leiste: die
     # letzte Seite steht dort immer als Link, die aktive als <span>.
+    # In der Suche wandert der Begriff mit — showEntries erkennt daran die
+    # Folgeseite (kein Titelfilter, die Seite sucht selbst).
     m = _RE_PAGINATION.search(sHtmlContent)
     if not m:
         return
@@ -322,6 +334,8 @@ def _addNextPage(oGui, sHtmlContent):
         sPageInfo = cGui.pageInfo(int(mCurrent.group(1)), max(aNumbers + [int(mCurrent.group(1))]))
     params = ParameterHandler()
     params.setParam('sUrl', cUtil.unescape(mNext.group(1)))
+    if sSearchText:
+        params.setParam('sSearchText', sSearchText)
     oGui.addNextPage(SITE_IDENTIFIER, 'showEntries', params, sPageInfo)
 
 
@@ -364,7 +378,7 @@ def showHosters():
         if 'youtube' in sHosterUrl:
             continue
         # Der Blocked-Check bekommt die volle Adresse: die VOE-Spiegel der Seite
-        # heissen z.B. eugenemakedraw.com, nur aus der Adresse findet ResolveURL
+        # tragen Fantasienamen ohne 'voe' darin, nur aus der Adresse findet ResolveURL
         # den Resolver. Angezeigt wird das Label der Seite (VOE, Vidara …).
         isBlocked, sHosterName = cConfig().isBlockedHoster(sHosterUrl)
         if isBlocked:

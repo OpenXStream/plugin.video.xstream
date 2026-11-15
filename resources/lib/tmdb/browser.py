@@ -34,6 +34,11 @@ ACTIVE = True  # fester Bestandteil — kein User-Toggle mehr, immer aktiv
 # sites/: der Domain-Check und die Site-Schleife des Hauptmenues sehen es nicht,
 # es gibt keine plugin_tmdb_browser.domain / _checkdomain Settings, und der
 # Menuepunkt kommt fest aus tmdbBrowserGuiElement() in xstream.py.
+# Sein Logo liegt dagegen wie die Site-Logos unter art/sites/<SITE_IDENTIFIER>.png:
+# nur dort findet es der Logo-Rueckfall in gui.createListItem, der jede Ebene des
+# Browsers bebildert (Menues, Listen, Weiter-Eintraege). Der trumb-Parameter traegt
+# nur das Bild des angeklickten Eintrags selbst — ein Logo unter art/ kaeme nur in
+# der obersten Ebene an, darunter stuende der Standard-Ordner.
 
 
 
@@ -56,9 +61,9 @@ def load():
     xbmcgui.Window(10000).clearProperty('xstream.tmdb_browser.personQuery')
 
     oGui = cGui()
-    _addNavEntry(oGui, 'Filme', 'showMoviesMenu')
-    _addNavEntry(oGui, 'Serien', 'showTVShowsMenu')
-    _addNavEntry(oGui, 'Schauspieler', 'showPersonsMenu')
+    _addNavEntry(oGui, cConfig().getLocalizedString(30502), 'showMoviesMenu')
+    _addNavEntry(oGui, cConfig().getLocalizedString(30511), 'showTVShowsMenu')
+    _addNavEntry(oGui, cConfig().getLocalizedString(30553), 'showPersonsMenu')
 
     oGui.setEndOfDirectory()
 
@@ -71,39 +76,39 @@ def showMoviesMenu():
     """10 Browse-Kategorien fuer Filme — analog xShip navigator.
 
     Reihenfolge: Pinned (Im Kino/Neu für Daheim) → Streaming-Anbieter → Aktuell-Tier
-    (Heute im Trend/Beliebt) → Browse-Tier (Genres/Jahr) → Bestenlisten-Tier
-    (Bestes Einspielergebnis/Am besten bewertet/Meiste Bewertungen).
+    (Heute im Trend) → Browse-Tier (Genres/Jahr) → Bestenlisten-Tier
+    (Beliebt/Bestes Einspielergebnis/Am besten bewertet/Meiste Bewertungen).
     """
     logger.info('%s: showMoviesMenu' % SITE_NAME)
     oGui = cGui()
 
     # Pinned
-    _addListingEntry(oGui, 'Im Kino', 'movie', 'kinotheater')
-    _addListingEntry(oGui, 'Neu für Daheim', 'movie', 'kino')
+    _addListingEntry(oGui, cConfig().getLocalizedString(30885), 'movie', 'kinotheater')
+    _addListingEntry(oGui, cConfig().getLocalizedString(30886), 'movie', 'kino')
 
     # Streaming-Anbieter Submenue (Position 3)
     params = ParameterHandler()
     params.setParam('media_type', 'movie')
     el = cGuiElement()
-    el.setTitle('Streaming-Anbieter')
+    el.setTitle(cConfig().getLocalizedString(30887))
     el.setSiteName(SITE_IDENTIFIER)
     el.setFunction('showStreamingProviders')
     oGui.addFolder(el, params)
 
     # Aktuell-Tier
-    _addListingEntry(oGui, 'Heute im Trend', 'movie', '__trending_day__')
+    _addListingEntry(oGui, cConfig().getLocalizedString(30888), 'movie', '__trending_day__')
 
     # Browse-Tier
-    _addNavEntry(oGui, 'Genres', 'showGenresMovies')
-    _addNavEntry(oGui, 'Jahr', 'showYearsMovies')
+    _addNavEntry(oGui, cConfig().getLocalizedString(30815), 'showGenresMovies')
+    _addNavEntry(oGui, cConfig().getLocalizedString(30564), 'showYearsMovies')
 
     # Bestenlisten-Tier — 'Beliebt' steht hier (nicht im Aktuell-Tier), weil es seit
     # dem Wegfall des Zeitfensters die dauerhaft beliebtesten Titel zeigt. Gleiche
     # Position wie im Serien-Menue.
-    _addListingEntry(oGui, 'Beliebt', 'movie', 'popular')
-    _addListingEntry(oGui, 'Bestes Einspielergebnis', 'movie', 'production_status=released&sort_by=revenue.desc')
-    _addListingEntry(oGui, 'Am besten bewertet', 'movie', 'toprated')
-    _addListingEntry(oGui, 'Meiste Bewertungen', 'movie', 'production_status=released&sort_by=vote_count.desc')
+    _addListingEntry(oGui, cConfig().getLocalizedString(30874), 'movie', 'popular')
+    _addListingEntry(oGui, cConfig().getLocalizedString(30889), 'movie', 'production_status=released&sort_by=revenue.desc')
+    _addListingEntry(oGui, cConfig().getLocalizedString(30890), 'movie', 'toprated')
+    _addListingEntry(oGui, cConfig().getLocalizedString(30891), 'movie', 'production_status=released&sort_by=vote_count.desc')
 
     oGui.setEndOfDirectory()
 
@@ -123,30 +128,30 @@ def showTVShowsMenu():
     oGui = cGui()
 
     # Pinned
-    _addListingEntry(oGui, 'Neu', 'tv', 'tvneu')
-    _addListingEntry(oGui, 'Laufend', 'tv', 'with_status=0&sort_by=popularity.desc')
-    _addListingEntry(oGui, 'Abgeschlossen', 'tv', 'with_status=3&sort_by=vote_count.desc')
+    _addListingEntry(oGui, cConfig().getLocalizedString(30554), 'tv', 'tvneu')
+    _addListingEntry(oGui, cConfig().getLocalizedString(30892), 'tv', 'with_status=0&sort_by=popularity.desc')
+    _addListingEntry(oGui, cConfig().getLocalizedString(30893), 'tv', 'with_status=3&sort_by=vote_count.desc')
 
     # Streaming-Anbieter Submenue (Position 4)
     params = ParameterHandler()
     params.setParam('media_type', 'tv')
     el = cGuiElement()
-    el.setTitle('Streaming-Anbieter')
+    el.setTitle(cConfig().getLocalizedString(30887))
     el.setSiteName(SITE_IDENTIFIER)
     el.setFunction('showStreamingProviders')
     oGui.addFolder(el, params)
 
     # Aktuell-Tier
-    _addListingEntry(oGui, 'Heute im Trend', 'tv', '__trending_day__')
+    _addListingEntry(oGui, cConfig().getLocalizedString(30888), 'tv', '__trending_day__')
 
     # Browse-Tier
-    _addNavEntry(oGui, 'Genres', 'showGenresTV')
-    _addNavEntry(oGui, 'Jahr', 'showYearsTV')
+    _addNavEntry(oGui, cConfig().getLocalizedString(30815), 'showGenresTV')
+    _addNavEntry(oGui, cConfig().getLocalizedString(30564), 'showYearsTV')
 
     # Bestenlisten-Tier
-    _addListingEntry(oGui, 'Beliebt', 'tv', 'sort_by=popularity.desc')
-    _addListingEntry(oGui, 'Am besten bewertet', 'tv', 'sort_by=vote_average.desc')
-    _addListingEntry(oGui, 'Meiste Bewertungen', 'tv', 'sort_by=vote_count.desc')
+    _addListingEntry(oGui, cConfig().getLocalizedString(30874), 'tv', 'sort_by=popularity.desc')
+    _addListingEntry(oGui, cConfig().getLocalizedString(30890), 'tv', 'sort_by=vote_average.desc')
+    _addListingEntry(oGui, cConfig().getLocalizedString(30891), 'tv', 'sort_by=vote_count.desc')
 
     oGui.setEndOfDirectory()
 
@@ -177,7 +182,8 @@ def _renderGenres(media_type):
 
 
 def _getGenres(media_type):
-    """TMDB-Genre-Liste via API.
+    """TMDB-Genre-Liste ueber cTMDB.getGenreList — dieselbe Quelle, aus der die
+    TMDB-Infos der Listen ihre Genre-Namen nehmen.
 
     media_type: 'movie' oder 'tv'
     Returns: list[dict] mit 'id' + 'name'
@@ -185,11 +191,8 @@ def _getGenres(media_type):
     Bei API-Fehler/Outage: leere Liste (User sieht leeres Menue statt
     eines kuratierten Fallback der beim Klick eh wieder API braucht).
     """
-    action = 'genre/%s/list' % media_type
     try:
-        data = cTMDB()._call(action)
-        if data and 'genres' in data and data['genres']:
-            return data['genres']
+        return cTMDB().getGenreList(media_type)
     except Exception as e:
         logger.warning('%s: Genre-API fehlgeschlagen: %s' % (SITE_NAME, e))
     return []
@@ -212,7 +215,8 @@ def _getWatchProviders(media_type):
     try:
         data = cTMDB()._call(action, append_to_response='watch_region=DE')
         if data and 'results' in data and data['results']:
-            # TMDB liefert unsortiert — wir sortieren nach display_priority (DE)
+            # Nach display_priority (DE) sortieren — die API-Antwort kam am 14.10.2026
+            # zwar schon in dieser Reihenfolge (196 Anbieter), zugesagt ist das nirgends
             providers = data['results']
             providers.sort(key=lambda p: p.get('display_priorities', {}).get('DE', 999))
             return providers
@@ -280,8 +284,9 @@ def showListings():
 
     URL-Params (via ParameterHandler):
         media_type: 'movie' oder 'tv'
-        url: TMDB-discover-Parameter ODER Keyword (kino/kinotheater/popular/toprated/tvneu)
-        page: Seitenzahl (default '1')
+        tmdb_url: TMDB-discover-Parameter ODER Keyword (kino/kinotheater/popular/toprated/tvneu)
+                  ODER der Trending-Sentinel '__trending_day__'
+        tmdb_page: Seitenzahl (default '1')
     """
     p = ParameterHandler()
     media_type = p.getValue('media_type')
@@ -326,7 +331,7 @@ def _resolveListingUrl(raw_url, media_type):
 
     Plus: ergaenzt fehlende Quality-Filter (Muster aus xShip) damit
     keine russischen No-Name-Filme oder Adult-Content auftauchen:
-      - region=DE (nur wenn tmdb_lang=de)
+      - region=DE (die TMDB-Sprache ist fest Deutsch)
       - include_adult=false
       - include_video=false (movie only)
       - vote_count.gte=20 (mindestens 20 Bewertungen)
@@ -362,8 +367,10 @@ def _resolveListingUrl(raw_url, media_type):
     extras = []
     # region=DE: nur bei Discover-URLs, nicht bei Streaming-Anbieter-Listings
     # (watch_region=DE filtert dort schon — region=DE waere Doppel-Filter und
-    #  wuerde non-DE-Release-Filme wie Squid Game etc. rausfiltern)
-    if cConfig().getSetting('tmdb_lang') == 'de' and 'watch_region=' not in base and 'region=' not in base:
+    #  wuerde non-DE-Release-Filme wie Squid Game etc. rausfiltern). Bis zum
+    # 25.10.2026 hing das an der Einstellung "TMDB Sprache" = Deutsch; die ist
+    # ausgebaut, die TMDB-Sprache ist fest Deutsch (api.py).
+    if 'watch_region=' not in base and 'region=' not in base:
         extras.append('region=DE')
     if 'include_adult=' not in base:
         extras.append('include_adult=false')
@@ -384,8 +391,9 @@ def _renderListingItem(oGui, item, media_type):
 
     Klick fuehrt direkt zu xStream's 'searchAlter' (Weitere Quellen) — das ist
     die existierende System-Funktion die durch alle aktivierten Plugins sucht.
-    searchAlter cuttet selbst Klammer-Jahr + S0/E0/Staffel-Tokens. Wir ersetzen
-    vorher den Em-Dash (das macht searchAlter nicht, siehe _cleanTitleForSearch).
+    searchAlter cuttet selbst Klammer-Jahr, Staffel-/Season-Formen und die Zusaetze
+    der Seite. Wir ersetzen vorher den Em-Dash (das macht searchAlter nicht, siehe
+    _cleanTitleForSearch).
 
     setMediaType triggert xStream's __createContextMenu fuer Trailer + Erweiterte Info.
     """
@@ -442,7 +450,7 @@ def _renderListingItem(oGui, item, media_type):
 
 def _addPaginationEntry(oGui, media_type, raw_url, next_page, total_pages):
     """Naechste-Seite-Eintrag am Listenende — gleicher Text und gleiche
-    Seitenlage wie in den Site-Files (Anzeigetext 30279, "(x von y)" ueber
+    Seitenlage wie in den Site-Files (Anzeigetext 30279, "(x/y)" ueber
     cGui.pageInfo); vorher stand hier ein fest deutscher Titel."""
     p = ParameterHandler()
     p.setParam('media_type', media_type)
@@ -480,7 +488,7 @@ def showPersonsMenu():
             sQuery = cached
             logger.info('%s: showPersonsMenu Cache-Treffer "%s"' % (SITE_NAME, sQuery))
         else:
-            sQuery = cGui().showKeyBoard(sHeading='Schauspieler-Suche')
+            sQuery = cGui().showKeyBoard(sHeading=cConfig().getLocalizedString(30894))
             if not sQuery:
                 # Abbruch: KEIN endOfDirectory, sonst leeres Verzeichnis -
                 # Kodi bleibt so in der aktuellen Liste
@@ -496,7 +504,7 @@ def showPersonsMenu():
         win.clearProperty('xstream.tmdb_browser.personQuery')
         # Nulltreffer MELDEN statt stumm ein leeres Verzeichnis zu zeigen — die
         # globale Suche und alle Site-Suchen melden seit dem 01.09.2026, nur dieser
-        # Weg blieb stumm (Full-Audit 02.09.2026).
+        # Weg blieb stumm (02.09.2026).
         cGui().showInfo()
         cGui().setEndOfDirectory()
         return
@@ -544,7 +552,7 @@ def _renderPersonItem(oGui, person):
             if t:
                 titles.append(t)
         if titles:
-            el.setDescription('Bekannt für: ' + ', '.join(titles))
+            el.setDescription(cConfig().getLocalizedString(30895) + ': ' + ', '.join(titles))
 
     if person.get('profile_path'):
         el.setThumbnail('https://image.tmdb.org/t/p/w500%s' % person['profile_path'])
@@ -657,7 +665,9 @@ def _cleanTitleForSearch(sTitle):
 
     searchAlter cuttet selbst:
       - Klammer-Jahr '(2025)'
-      - Season/Episode-Tokens (' S0', ' E0', ' - Staffel', ' Staffel')
+      - Staffel-Formen der Seiten ("- Staffel 3", "- 2 Staffel", "(S05E01)") per Regex
+      - englische Season-Formen, S01E02 und die Tokens ' S0'/' E0' (cParser.stripSeasonForms)
+      - Zusaetze der Seite wie Ger Sub, (US), *Subbed* (cParser.stripTitleNotes)
     """
     if not sTitle:
         return ''

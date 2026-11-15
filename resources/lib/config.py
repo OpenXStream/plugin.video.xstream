@@ -43,13 +43,6 @@ class cConfig:
         else:
             return default
         
-    def getSettingString(self, sName, default=''):
-        result = self.__addon.getSetting(sName)
-        if result:
-            return str(result)
-        else:
-            return default
-
     def setSetting(self, id, value):
         # Frueher stand hier `if id and value` — damit liefen alle Versuche ins
         # Leere, einen Wert zu LOESCHEN (Domain zuruecksetzen, Statuscode
@@ -76,7 +69,7 @@ class cConfig:
         blockedHoster = cConfig().getSetting('blockedHoster').replace(',', ' ').split()  # Komma UND Space als Trenner (frei mischbar)
         for i in blockedHoster: hostblockDict.append(i.strip().lower())
         for i in hostblockDict:
-            # Voller Domain-Eintrag (z.B. moflix-stream.click) blockt NUR genau diese Domain.
+            # Voller Domain-Eintrag (Name mit TLD) blockt NUR genau diese Domain.
             # Nackter Name (z.B. doodstream) matcht weiterhin alle TLDs, da Substring von doodstream.xx.
             if i in domain.lower(): return True, domain
         if checkResolver:   # Überprüfung in resolveUrl

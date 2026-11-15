@@ -1,21 +1,22 @@
 # -*- coding: utf-8 -*-
 # Python 3
 """
-vavoo.py - Vavoo live TV for xStream.
+vavoo.py - Vavoo Live-TV fuer xStream.
 
-Ported from the Oracle 3.6 addon (vjlive/vjackson) into xStream:
-  - HTTP via xStream's cRequestHandler (no 'requests' dependency)
-  - Playback via Kodi's native player (no inputstream.ffmpegdirect):
-    ListItem(path) + HLS mime type + header pipe, exactly like hoster.py
-  - Backend/auth lives in auth.py (switch backend there only)
-  - No favorites system (intentionally dropped)
+Seit dem 04.11.2026 auf Vavoos eigener Live-Schnittstelle (mhub, zwei
+GET-Abrufe, siehe auth.py). Aufbau:
+  - HTTP ueber xStreams cRequestHandler (keine Abhaengigkeit von 'requests')
+  - Wiedergabe wie in hoster.py: ListItem(path) + HLS-MIME-Typ + Header-Pipe;
+    HLS laeuft ueber InputStream Adaptive, wenn dieses Addon aktiv ist
+    (player.applyIsa), sonst ueber Kodis nativen Player (kein ffmpegdirect)
+  - Das Backend steht in auth.py (Backend-Wechsel nur dort)
+  - Kein Favoriten-System (bewusst weggelassen)
 
-Menu flow:
-  vavootv (main-menu entry)  ->  show_countries  ->  show_channels  ->  play
+Menueablauf:
+  vavootv (Hauptmenuepunkt)  ->  show_channels (die Sender von GROUP)  ->  play
 
-Caching (kept from Oracle):
-  - country/group list: permanent, also serves as fallback (see get_available_countries)
-  - per-group channel list: 20 min TTL
+Cache:
+  - Senderliste von GROUP: 20 min gueltig
 """
 
 import os
@@ -32,70 +33,63 @@ import xbmcvfs
 
 from urllib.parse import urlencode, quote_plus
 
-from resources.lib.handler.requestHandler import cRequestHandler
+from resources.lib.handler.requestHandler import cRequestHandler, ERR_TIMEOUT, ERR_URL, REQUEST_ERRORS
 from resources.lib.config import cConfig
 from resources.lib.logger import logger
+from resources.lib.player import cPlayer, applyIsa
 from resources.lib.vavoo import auth
 
 
 # =============================================================================
-# CONSTANTS
+# KONSTANTEN
 # =============================================================================
 
 SITE_NAME = 'vavootv'
 
-REQUEST_TIMEOUT = 10
-API_BASE_URL = auth.CATALOG_BASE
+API_BASE_URL = auth.BASE_URL
 
-# Country/group list, stored permanently. Doubles as the fallback when the
-# catalog answers without its filter description (see get_available_countries).
-GROUPS_CACHE_KEY = "group_list"
+# Die eine Sendergruppe, die das Addon zeigt (seit dem 04.10.2026 nur deutsches
+# Fernsehen, die Laenderliste davor ist raus). Begruendete Ausnahme von der Regel
+# "nichts hartkodieren": der Wert ist die exakte Schreibweise des Gruppenfilters
+# im Katalog des Anbieters, und der Filter achtet auf Gross-/Kleinschreibung ("germany",
+# "GERMANY" und "Deutschland" liefern 0 Sender, gemessen 04.10.2026). Benennt
+# der Anbieter die Gruppe um, kommt beim Klick genau ein Fenster "Keine Sender
+# gefunden", bis dieser Wert nachgezogen ist.
+GROUP = "Germany"
 
-# Prefix der Window-Properties (RAM-Ebene des Caches), Namensraum wie der Rest
+# Praefix der Window-Properties (RAM-Ebene des Caches), Namensraum wie der Rest
 # des Addons: xstream.<Bereich>.<Schluessel>. Fenster 10000 teilen sich alle
 # Addons; die Datei-Ebene unter <profile>/vavoo/ bleibt davon unberuehrt.
 PROP_PREFIX = "xstream.vavoo."
 
-# Status, bei denen ein zweiter Versuch mit frischer Signatur sinnvoll ist. Alles
-# andere (400 Validation error, 5xx Ueberlast, Timeout -1) liegt am Server und
-# wird von einem neuen Ping nicht besser. Als Strings, weil getStatus() je nach
-# Zweig einen String liefert.
-AUTH_RETRY_STATUS = ('401', '403', '500')
-
-# Kein zweiter Versuch nach einem Lese-Timeout: der erste hat schon
-# REQUEST_TIMEOUT Sekunden gekostet, ein zweiter verdoppelt nur die Wartezeit,
-# bevor der Nutzer die Meldung sieht.
-NO_RETRY_STATUS = ('-1',)
+# Kein zweiter Versuch nach einem Lese-Timeout (der erste hat schon den
+# Abruf-Timeout des requestHandlers gekostet, Einstellung requestTimeout — ein
+# zweiter verdoppelt nur die Wartezeit, bevor der Nutzer die Meldung sieht) und
+# nicht nach 404/410 (unbekannte Senderkennung bzw. Schnittstelle weg, gemessen
+# 04.11.2026: ein unbekannter Resolve antwortet 404 — da hilft keine Wiederholung).
+# Als Strings, weil getStatus() einen String liefert (seit dem 02.11.2026 in jedem Zweig).
+NO_RETRY_STATUS = ('-1', '404', '410')
 
 # Kurze Pause vor dem Wiederholungsversuch. Gemessen am 31.08.2026 gegen den
-# echten Katalog: 5 Fehlschlaege in 25 Abrufen, davon 4 durch einen sofortigen
-# zweiten Versuch OHNE neuen Ping gerettet.
+# Katalog der alten Schnittstelle: 5 Fehlschlaege in 25 Abrufen, davon 4 durch
+# einen sofortigen zweiten Versuch gerettet.
 RETRY_DELAY_MS = 500
 
 home = xbmcgui.Window(10000)
 
-# Global per-invocation channel cache (name -> [urls]) for playback lookups.
+# Globaler Sender-Cache je Aufruf (Name -> [urls]) zum Nachschlagen beim Abspielen.
 _channels_cache = None
 
 
-# Zwei Fehlerarten, die frueher beide als ConnectionError herauskamen und deshalb
-# nicht zu unterscheiden waren. Beide erben von ConnectionError, damit bestehende
-# Aufrufer unveraendert weiterlaufen.
-#   VavooAuthError    - der Ping ist gescheitert. get_signature() hat dem Nutzer
-#                       bereits einen Dialog gezeigt (30845/30846 bzw. 30847/30848),
-#                       der Aufrufer darf also NICHT nochmal melden.
-#   VavooRequestError - der Ping lief, der Katalog/Resolve hat abgelehnt. Hier hat
-#                       noch niemand etwas gesagt, der Aufrufer MUSS melden.
-class VavooAuthError(ConnectionError):
-    """Auth ping failed — a dialog has already been shown."""
-
-
+# Katalog oder Resolve haben nicht geliefert (Status im Text). Erbt von
+# ConnectionError wie frueher, die Aufrufer melden es dem Nutzer selbst — der
+# requestHandler laeuft hier still (ignoreErrors), bis dahin hat niemand geredet.
 class VavooRequestError(ConnectionError):
-    """Catalog/resolve request failed — nobody has told the user yet."""
+    """Katalog- oder Resolve-Abruf gescheitert — dem Nutzer noch nicht gemeldet."""
 
 
 # =============================================================================
-# PLUGIN / URL HELPERS
+# PLUGIN- UND ADRESS-HELFER
 # =============================================================================
 
 def _handle():
@@ -113,7 +107,7 @@ def _base():
 
 
 def _url(**params):
-    """Build a plugin callback URL for the vavootv dispatcher."""
+    """Plugin-Adresse fuer den Rueckruf an den vavootv-Verteiler bauen."""
     params['site'] = SITE_NAME
     return _base() + '?' + urlencode(params)
 
@@ -135,7 +129,7 @@ def _error_dialog(heading, message):
 
 
 # =============================================================================
-# FILE/MEMORY CACHE  (window props + JSON files under the addon profile)
+# DATEI-/RAM-CACHE  (Window-Properties + JSON-Dateien im Addon-Profil)
 # =============================================================================
 
 _legacy_cache_checked = False
@@ -145,7 +139,7 @@ def _drop_legacy_cache_dir(profile):
     """Den alten vavoo_cache/-Ordner einmalig entfernen.
 
     Inhalt ist reiner Cache und wird beim naechsten Abruf in vavoo/ neu
-    angelegt — es geht nichts verloren. Fail-soft.
+    angelegt — es geht nichts verloren. Ein Fehler beim Loeschen wird nur geloggt.
     """
     global _legacy_cache_checked
     if _legacy_cache_checked:
@@ -162,7 +156,8 @@ def _drop_legacy_cache_dir(profile):
 
 
 def _cache_dir():
-    """<profile>/vavoo — derselbe Ordner, in dem auth.py die device.json ablegt."""
+    """<profile>/vavoo — der Ordner des Moduls (Senderlisten-Cache; bis zum 04.11.2026 lag hier auch die
+    Geraete-Identity device.json des alten Backends, die bleibt bei Bestandsinstallationen liegen)."""
     profile = xbmcvfs.translatePath(cConfig().getAddonInfo('profile'))
     path = os.path.join(profile, 'vavoo')
     if not os.path.exists(path):
@@ -177,9 +172,9 @@ def _cache_dir():
 def _safe_key(key):
     """Cache-Schluessel auf unbedenkliche Zeichen reduzieren.
 
-    Der Schluessel enthaelt bei Sendergruppen den Gruppennamen aus dem Katalog
-    des Anbieters — also Fremddaten. Er landet direkt im Dateinamen, und ein
-    Schraegstrich oder Punktfolge darin wuerde die Datei ausserhalb des
+    Der Schluessel traegt den Gruppennamen in der Schreibweise des Anbieters
+    (heute die Konstante GROUP) und landet direkt im Dateinamen; ein
+    Schraegstrich oder eine Punktfolge darin wuerde die Datei ausserhalb des
     Cache-Ordners ablegen. Auf Windows sind Doppelpunkte und Sternchen als
     Dateiname ohnehin unzulaessig.
     """
@@ -187,7 +182,7 @@ def _safe_key(key):
 
 
 def _set_cache(key, value, timeout=False):
-    """Store a value. timeout=False -> permanent; else seconds until expiry."""
+    """Wert ablegen. timeout=False -> dauerhaft; sonst Sekunden bis zum Ablauf."""
     expiry = False if timeout is False else int(time.time()) + timeout
     payload = json.dumps({"exp": expiry, "value": value})
     home.setProperty(PROP_PREFIX + key, payload)
@@ -207,7 +202,7 @@ def _set_cache(key, value, timeout=False):
 
 
 def _get_cache(key):
-    """Return a cached value if present and unexpired, else None."""
+    """Gecachten Wert liefern, wenn vorhanden und nicht abgelaufen, sonst None."""
     now = int(time.time())
 
     cached = home.getProperty(PROP_PREFIX + key)
@@ -247,54 +242,30 @@ def _clear_cache(key):
 
 
 # =============================================================================
-# HTTP  (all via cRequestHandler)
+# HTTP  (alles ueber cRequestHandler)
 # =============================================================================
 
-def _catalog_post(url, data_dict, _retry=True):
-    """POST JSON to an auth-signed catalog/resolve endpoint; one auth-retry.
+def _api_get(url, params, _retry=True):
+    """Katalog- oder Resolve-Endpunkt des Backends (auth.py) per GET abrufen und
+    das JSON auswerten; hoechstens ein Wiederholungsversuch nach kurzer Pause
+    (keiner nach einem Lese-Timeout oder einem 404/410, siehe NO_RETRY_STATUS).
 
-    Returns parsed JSON. Raises ConnectionError on unrecoverable failure.
+    Gibt das ausgewertete JSON-Objekt zurueck. Wirft VavooRequestError
+    (ConnectionError), wenn das Backend keine brauchbare Antwort liefert.
     """
-    signature = auth.get_signature()
-    if not signature:
-        raise VavooAuthError("Authentication failed")
-
-    oRequest = cRequestHandler(url, caching=False, ignoreErrors=True,
-                               method='POST', data=json.dumps(data_dict))
-    oRequest.addHeaderEntry('User-Agent', auth.CATALOG_UA)
-    oRequest.addHeaderEntry('Accept', 'application/json')
-    oRequest.addHeaderEntry('Accept-Language', 'de')
-    oRequest.addHeaderEntry('Content-Type', 'application/json; charset=utf-8')
-    oRequest.addHeaderEntry(auth.SIG_HEADER, signature)
-
-    content = oRequest.request()
+    oRequest = auth.apply(cRequestHandler(url + '?' + urlencode(params), caching=False, ignoreErrors=True))
+    result = oRequest.requestJson()   # fetch()-Modus des Browser-Profils; None bei Fehler oder ohne JSON
     status = oRequest.getStatus()
 
-    try:
-        result = json.loads(content)
-    except Exception:
-        result = None
-
-    if result is None:
-        if _retry:
-            if str(status) in AUTH_RETRY_STATUS:
-                # Eine frische Signatur hilft nur, wenn der Server die alte
-                # beanstandet hat. Gemessen am 31.08.2026 gegen vavoo.to: eine
-                # kaputte Signatur wird mit HTTP 500 ("Malformed MediaHubMX
-                # signature") abgelehnt. Vorher lief der Ping bei JEDEM Fehler
-                # mit und hat im Log vom 31.08. jeden Aufruf verdoppelt, ohne
-                # dass ein einziger Versuch dadurch durchkam.
-                logger.info("[vavoo] catalog/resolve failed (status=%s) — refreshing auth and retrying" % status)
-                if auth.refresh():
-                    return _catalog_post(url, data_dict, _retry=False)
-            elif str(status) not in NO_RETRY_STATUS:
-                # Aussetzer auf Serverseite (400 Validation error, 503 Ueberlast).
-                # Da hilft kein neuer Ping, aber sehr wohl ein zweiter Anlauf:
-                # gemessen 31.08.2026, 5 Fehlschlaege in 25 Abrufen, 4 davon beim
-                # sofortigen zweiten Versuch durchgekommen.
-                logger.info("[vavoo] catalog/resolve failed (status=%s) — retrying once without a new ping" % status)
-                xbmc.sleep(RETRY_DELAY_MS)
-                return _catalog_post(url, data_dict, _retry=False)
+    if not isinstance(result, dict):
+        if _retry and str(status) not in NO_RETRY_STATUS:
+            # Aussetzer auf Serverseite (5xx, 400) oder eine Antwort ohne JSON: ein
+            # zweiter Anlauf lohnt (gemessen 31.08.2026 an der alten Schnittstelle:
+            # 5 Fehlschlaege in 25 Abrufen, 4 davon beim sofortigen zweiten Versuch
+            # durchgekommen); nach einem Timeout nicht (NO_RETRY_STATUS).
+            logger.info("[vavoo] catalog/resolve failed (status=%s) — retrying once" % status)
+            xbmc.sleep(RETRY_DELAY_MS)
+            return _api_get(url, params, _retry=False)
         logger.error("[vavoo] catalog/resolve failed (status=%s), giving up" % status)
         raise VavooRequestError("Request failed (status=%s)" % status)
 
@@ -302,13 +273,14 @@ def _catalog_post(url, data_dict, _retry=True):
 
 
 # =============================================================================
-# CHANNEL NAME NORMALIZATION
+# SENDERNAMEN VEREINHEITLICHEN
 # =============================================================================
 
 def _normalize_channel_name(name):
-    """Strip stream-variant suffixes so duplicates merge.
+    """Endungen der Stream-Varianten abschneiden, damit Dubletten zusammenfallen.
 
-    Catalog: "RTL .s" / "RTL .b" -> "RTL"   |   older form: "RTL (1)" -> "RTL"
+    Katalog: "RTL .b" / "RTL .c" / "RTL .s" -> "RTL" (14.10.2026, Seite 1: .b 168,
+    .c 99, .s 33)   |   aeltere Form: "RTL (1)" -> "RTL"
     """
     normalized = name.strip()
     normalized = re.sub(r'\s+\.[a-zA-Z]+$', '', normalized)
@@ -317,116 +289,22 @@ def _normalize_channel_name(name):
 
 
 # =============================================================================
-# COUNTRIES
+# SENDER ABRUFEN
 # =============================================================================
 
-def _extract_groups(response):
-    """Read the group filter's own value list out of a catalog response.
-
-    The catalog describes the filters it accepts under features.filter; the
-    entry with id "group" carries the exact spellings its group filter matches.
-    That list is what we want, because the filter is case-SENSITIVE: a name
-    taken from channel data instead (a stray "GERMANY" next to the real
-    "Germany") yields a country entry that resolves to nothing at all.
-
-    Returns a list of names, or [] when the field is absent.
-    """
-    features = response.get("features")
-    if not isinstance(features, dict):
-        return []
-    for entry in features.get("filter") or []:
-        if not isinstance(entry, dict) or entry.get("id") != "group":
-            continue
-        values = entry.get("values") or []
-        return [v.strip() for v in values if isinstance(v, str) and v.strip()]
-    return []
-
-
-def _fetch_groups():
-    """Ask the catalog for the values its group filter accepts.
-
-    Any catalog response carries the filter description, so this is the same
-    request the channel list makes, only without a group. Returns [] on failure.
-    """
-    data = {
-        "language": "de",
-        "region": "AT",
-        "catalogId": auth.CATALOG_ID,
-        "id": auth.CATALOG_ID,
-        "adult": False,
-        "search": "",
-        "sort": "name",
-        "filter": {},
-        "cursor": 0,
-        "count": 9999,
-        "clientVersion": auth.CLIENT_VERSION,
-    }
-    url = "%s/%s" % (API_BASE_URL, auth.CATALOG_ENDPOINT)
-    try:
-        return _extract_groups(_catalog_post(url, data))
-    except Exception as e:
-        logger.error("[vavoo] failed to fetch group list: %s" % e)
-        return []
-
-
-def _store_groups(countries):
-    """Sort a freshly fetched group list and keep it permanently."""
-    countries.sort()
-    _set_cache(GROUPS_CACHE_KEY, countries, False)   # permanent
-    logger.debug("[vavoo] %s countries from catalog filter" % len(countries))
-
-
-def get_available_countries(use_cache=True):
-    """Country/region list, taken from the catalog's own group filter."""
-    if use_cache:
-        cached = _get_cache(GROUPS_CACHE_KEY)
-        if cached:
-            logger.debug("[vavoo] returning cached country list (%s)" % len(cached))
-            return cached
-
-    countries = _fetch_groups()
-    if countries:
-        _store_groups(countries)
-        return countries
-
-    # Request failed, or the catalog answered without describing its filters.
-    # The last known list is a far better answer than an empty menu, so it is
-    # deliberately NOT cleared before a refresh — a fresh list overwrites it.
-    previous = _get_cache(GROUPS_CACHE_KEY)
-    if previous:
-        logger.info("[vavoo] no group filter in catalog reply, keeping known country list")
-        return previous
-
-    _error_dialog(_L(30849), _L(30850))
-    return []
-
-
-# =============================================================================
-# CHANNEL FETCHING
-# =============================================================================
-
-def _fetch_channels_page(group, cursor=0):
-    """Fetch a single page of channels for a group (catalog API)."""
-    data = {
-        "language": "de",
-        "region": "AT",
-        "catalogId": auth.CATALOG_ID,
-        "id": auth.CATALOG_ID,
-        "adult": False,
-        "search": "",
-        "sort": "name",
-        "filter": {"group": group},
-        "cursor": cursor,
-        "count": 9999,
-        "clientVersion": auth.CLIENT_VERSION,
-    }
-    url = "%s/%s" % (API_BASE_URL, auth.CATALOG_ENDPOINT)
-    return _catalog_post(url, data)
+def _fetch_channels_page(group, cursor=None):
+    """Eine einzelne Seite Sender einer Gruppe abrufen (Katalog-API)."""
+    # Eine Seite = 300 Eintraege, weiter geht es ueber nextCursor (Text '300',
+    # '600', ...; die letzte Seite kommt ohne) — gemessen 22.10. und 04.11.2026.
+    params = {auth.GROUP_PARAM: group}
+    if cursor is not None:
+        params[auth.CURSOR_PARAM] = cursor
+    return _api_get(auth.CATALOG_URL, params)
 
 
 def _collect_channels(group, channels):
-    """Collect all channels for a group via the catalog API (paginated)."""
-    cursor = 0
+    """Alle Sender einer Gruppe ueber die Katalog-API sammeln (seitenweise)."""
+    cursor = None
     page_num = 0
     max_pages = 100
     seen_cursors = set()
@@ -434,7 +312,9 @@ def _collect_channels(group, channels):
     while page_num < max_pages:
         page_num += 1
         response = _fetch_channels_page(group, cursor)
-        items = response.get("items", [])
+        items = response.get("items")
+        if not isinstance(items, list):
+            items = []
         next_cursor = response.get("nextCursor")
         logger.debug("[vavoo] catalog page %d: %d items, nextCursor=%s (group=%s)" % (
             page_num, len(items), next_cursor, group))
@@ -442,7 +322,9 @@ def _collect_channels(group, channels):
             break
 
         for item in items:
-            raw_name = item.get("name", "").strip()
+            if not isinstance(item, dict):
+                continue
+            raw_name = str(item.get("name") or "").strip()
             item_url = item.get("url")
             if not item_url or not raw_name:
                 continue
@@ -465,10 +347,10 @@ def _collect_channels(group, channels):
 
 
 def getchannels_by_group(group):
-    """Channels for a group. Uses 20-min file cache + populates global cache."""
+    """Sender einer Gruppe. Nutzt den 20-min-Datei-Cache und fuellt den globalen Cache."""
     global _channels_cache
 
-    cache_key = "channels_group_%s" % group
+    cache_key = "channels_live_%s" % group
     cached = _get_cache(cache_key)
     if cached:
         logger.debug("[vavoo] cached channels for '%s' (%s)" % (group, len(cached)))
@@ -481,14 +363,9 @@ def getchannels_by_group(group):
     _collect_channels(group, channels)
     logger.info("[vavoo] group=%s collected=%d distinct channels" % (group, len(channels)))
 
-    # Empty-result fallback: 0 channels likely = expired/cold signature (200 + empty items).
-    if not channels:
-        logger.info("[vavoo] 0 channels — refreshing auth and retrying once")
-        if auth.refresh():
-            _collect_channels(group, channels)
-            logger.info("[vavoo] retry after auth refresh: %s channels" % len(channels))
-
-    # Only cache non-empty results (empty == likely auth failure, not a real empty group).
+    # Nur nicht-leere Ergebnisse cachen: eine leere Liste ist ein Fehlschlag
+    # (unbekannter Gruppenname — 200 mit 0 Eintraegen, gemessen 04.11.2026 mit
+    # "germany"), keine echte leere Gruppe.
     if channels:
         _set_cache(cache_key, channels, 1200)   # 20 min
 
@@ -499,31 +376,59 @@ def getchannels_by_group(group):
 
 
 def refresh_group_cache(group):
-    """Clear channel cache for a group so it re-fetches."""
+    """Sender-Cache einer Gruppe leeren, damit neu abgerufen wird."""
     global _channels_cache
-    _clear_cache("channels_group_%s" % group)
+    _clear_cache("channels_live_%s" % group)
     _channels_cache = None
 
 
 # =============================================================================
-# STREAM RESOLUTION
+# STREAM AUFLOESEN
 # =============================================================================
 
-def _follow_stream_url(url, timeout=REQUEST_TIMEOUT):
-    """Follow a resolved URL through redirects to the final stream URL.
+def _follow_stream_url(url):
+    """Einer aufgeloesten Adresse ueber Weiterleitungen bis zur endgueltigen
+    Stream-Adresse folgen.
 
-    Bypasses simple interstitial/ad HTML pages by extracting an .m3u8 if the
-    response turns out to be HTML. Best-effort: falls back to the original URL.
+    Einfache Zwischen- und Werbeseiten (HTML) werden uebersprungen: ist die
+    Antwort HTML, wird daraus eine .m3u8 gezogen. Nach bestem Bemuehen: sonst
+    bleibt es bei der urspruenglichen Adresse. Gibt (None, headers) zurueck,
+    wenn die Adresse gar nicht antwortet (Timeout, keine Verbindung) oder mit
+    einem Serverfehler (5xx) — siehe den Kommentar an diesem Zweig.
     """
+    # Der Abspiel-Kopfsatz: die Browser-Kennung des Profils wie bei den API-Abrufen
+    # (Vorabruf hier, Player ueber die Pipe bzw. die ISA-Properties)
     stream_headers = {
-        'User-Agent': auth.CATALOG_UA,
+        'User-Agent': cRequestHandler.RandomUA(),
         'Accept': '*/*',
     }
     try:
         oRequest = cRequestHandler(url, caching=False, ignoreErrors=True)
-        oRequest.addHeaderEntry('User-Agent', auth.CATALOG_UA)
         oRequest.addHeaderEntry('Accept', '*/*')
+        started = time.time()
         content = oRequest.request()
+        status = str(oRequest.getStatus())
+        # Eine Zeile je Vorabruf mit Status und Dauer: das Verhalten der Edge-Server
+        # wechselt stuendlich (ARD auf 193.47.62.157 antwortete am 26.10.2026 fast
+        # den ganzen Vormittag mit 500, zwischendurch mit 200), und nur das Log
+        # zeigt hinterher, ob die Adresse oder der Player gescheitert ist.
+        logger.info("[vavoo] stream pre-check: status %s after %.1f s" % (status, time.time() - started))
+        if content in (ERR_TIMEOUT, ERR_URL) or (content in REQUEST_ERRORS and status.startswith('5')):
+            # Gar keine Antwort (Timeout, keine Verbindung) oder ein Serverfehler:
+            # der Player wuerde an derselben Adresse nur scheitern — mit
+            # InputStream Adaptive bis zu einer halben Minute bei schwarzem Bild,
+            # und ein Stopp in dieser Wartezeit hing bei neueren Kodi-Versionen.
+            # Gemessen 20.10.2026: ein Edge-Server hielt den Abruf 30 s fest und
+            # antwortete dann mit 502, waehrend andere Sender auf demselben
+            # Edge-Server sofort antworteten. Gemessen 26.10.2026: derselbe
+            # Edge-Server antwortete fuer einen Sender stundenlang sofort mit 500
+            # — der Player zeigte dann nur Kodis eigenes Fenster, und nichts sagte,
+            # welchen Stream man nehmen soll. Deshalb zaehlt ein 5xx als keine
+            # Antwort, mit unserer Meldung (30855/30856). 4xx bleibt wie bisher
+            # beim Player, der scheitert daran schnell. Der requestHandler hat
+            # die Adresse schon geloggt.
+            logger.error("[vavoo] stream address gave no answer (status %s), not starting the player" % status)
+            return None, stream_headers
         final_url = oRequest.getRealUrl() or url
 
         head = (content or "")[:2000].lower()
@@ -543,28 +448,23 @@ def _follow_stream_url(url, timeout=REQUEST_TIMEOUT):
         return url, stream_headers
 
 
-def resolve_link(link, timeout=REQUEST_TIMEOUT):
-    """Resolve a channel link to a playable (url, headers) pair."""
-    url = "%s/%s" % (API_BASE_URL, auth.RESOLVE_ENDPOINT)
-    data = {
-        "language": "de",
-        "region": "AT",
-        "url": link,
-        "clientVersion": auth.CLIENT_VERSION,
-    }
+def resolve_link(link):
+    """Sender-Link zu einem abspielbaren Paar (url, headers) aufloesen; url ist
+    None, wenn die Stream-Adresse nicht antwortet (_follow_stream_url)."""
+    # Die Antwort ist ein Objekt {format, live, name, url} (gemessen 22.10. und
+    # 04.11.2026), die Adresse fuehrt per _follow_stream_url zur .m3u8. Referer und
+    # Origin auf die Seite des Backends wie bei einem Browser, der von dort spielt.
+    result = _api_get(auth.RESOLVE_URL, {auth.RESOLVE_PARAM: link})
+    resolved_url = result.get("url")
+    if not isinstance(resolved_url, str) or not resolved_url.strip():
+        logger.error("[vavoo] resolve without stream address (keys=%s)" % sorted(result))
+        raise VavooRequestError("Resolve without url")
+    resolve_headers = result.get("headers")
 
-    result = _catalog_post(url, data)
-    resolved_url = result[0]["url"]
-    resolve_headers = result[0].get("headers", {})
+    final_url, stream_headers = _follow_stream_url(resolved_url)
 
-    signature = auth.get_signature()
-
-    final_url, stream_headers = _follow_stream_url(resolved_url, timeout=timeout)
-
-    if resolve_headers:
+    if isinstance(resolve_headers, dict):
         stream_headers.update(resolve_headers)
-    if signature:
-        stream_headers[auth.SIG_HEADER] = signature
     stream_headers["Referer"] = API_BASE_URL + "/"
     stream_headers["Origin"] = API_BASE_URL
 
@@ -572,11 +472,11 @@ def resolve_link(link, timeout=REQUEST_TIMEOUT):
 
 
 # =============================================================================
-# STREAM SELECTION UI
+# STREAM-AUSWAHL (OBERFLAECHE)
 # =============================================================================
 
 def _select_stream(name, urls):
-    """Pick a stream. Returns (index, title); index -1 == cancelled."""
+    """Stream waehlen. Gibt (index, title) zurueck; index -1 == abgebrochen."""
     stream_count = len(urls)
     if stream_count <= 1:
         return 0, name
@@ -588,11 +488,11 @@ def _select_stream(name, urls):
 
 
 # =============================================================================
-# DIRECTORY LISTINGS
+# VERZEICHNISLISTEN
 # =============================================================================
 
 def _add_dir(label, isFolder=True, **params):
-    """Add a folder/menu entry to the current listing."""
+    """Ordner- bzw. Menueeintrag zum Verzeichnis dieses Aufrufs hinzufuegen."""
     listitem = xbmcgui.ListItem(label)
     listitem.setArt({'icon': 'DefaultFolder.png'})
     try:
@@ -602,78 +502,18 @@ def _add_dir(label, isFolder=True, **params):
     xbmcplugin.addDirectoryItem(_handle(), _url(**params), listitem, isFolder)
 
 
-def show_countries(params=None):
-    """Top level of Vavoo TV: list of countries/regions (loaded directly)."""
-    xbmcplugin.setContent(_handle(), "files")
-
-    countries = get_available_countries()
-    if not countries:
-        xbmcplugin.endOfDirectory(_handle(), succeeded=False)
-        return
-
-    # Red refresh entry on top.
-    _add_dir("[COLOR red]%s[/COLOR]" % _L(30864), isFolder=True, function="refresh_countries")
-
-    for country in countries:
-        _add_dir(country, isFolder=True, function="channelsbycategory", group=country)
-
-    xbmcplugin.endOfDirectory(_handle(), cacheToDisc=False)
-
-
-def refresh_countries(params=None):
-    """Force-refresh the country list with progress, then reload cleanly."""
-    progress = xbmcgui.DialogProgress()
-    progress.create(_L(30842), _L(30860))
-    progress.update(30)
-
-    # No pre-clear: a successful fetch overwrites the cache. Clearing first
-    # would throw away the entry that serves as fallback for show_countries
-    # exactly when the refresh fails.
-    progress.update(70, _L(30862))
-    # Ask the catalog directly instead of get_available_countries(): that
-    # reader keeps the last known list when the catalog fails, and a refresh
-    # must not report success for a list that did not come from the catalog.
-    try:
-        countries = _fetch_groups()
-        success = bool(countries)
-        if success:
-            _store_groups(countries)
-    except Exception:
-        success = False
-
-    progress.update(100)
-    progress.close()
-
-    xbmcplugin.endOfDirectory(_handle(), succeeded=False)
-    xbmc.executebuiltin("Action(ParentDir)")
-    xbmc.sleep(300)
-
-    if success:
-        _notify(_L(30857))
-        xbmc.executebuiltin("Container.Refresh")
-    else:
-        _notify(_L(30859), error=True)
-
-
 def show_channels(params):
-    """List channels for a group/country. Red refresh entry on top."""
-    group = params.getValue('group') or "Germany"
+    """Oberste Ebene von Vavoo TV: die Sender von GROUP. Oben steht der rote
+    Eintrag zum Aktualisieren."""
+    group = GROUP
     xbmcplugin.setContent(_handle(), "videos")
 
     try:
         results = getchannels_by_group(group)
-    except VavooAuthError as e:
-        # Der Ping ist gescheitert, get_signature() hat den Dialog schon gezeigt.
-        # Hier NICHT nochmal melden, sonst stehen zwei Fenster uebereinander.
-        logger.error("[vavoo] failed to load channels for %s: %s" % (group, e))
-        xbmcplugin.endOfDirectory(_handle(), succeeded=False)
-        return
     except Exception as e:
-        # Alles andere hat noch niemand gemeldet. Frueher lief dieser Zweig stumm,
-        # weil der Kommentar hier annahm, get_signature() habe bereits geredet -
-        # das gilt aber nur fuer den Ping. Am 31.08.2026 lief der Ping sauber
-        # durch und der Katalog antwortete mit 400: der Nutzer klickte auf ein
-        # Land und es passierte sichtbar gar nichts.
+        # Noch hat niemand gemeldet (der requestHandler laeuft still): ohne das
+        # Fenster klickte der Nutzer, und es passierte sichtbar gar nichts
+        # (31.08.2026, Katalog antwortete 400).
         logger.error("[vavoo] failed to load channels for %s: %s" % (group, e))
         _error_dialog(_L(30851), _L(30852) % group)
         xbmcplugin.endOfDirectory(_handle(), succeeded=False)
@@ -684,9 +524,9 @@ def show_channels(params):
         xbmcplugin.endOfDirectory(_handle(), succeeded=False)
         return
 
-    # Red refresh entry (only when channels loaded successfully).
+    # Roter Aktualisieren-Eintrag (nur, wenn die Sender geladen wurden).
     _add_dir("[COLOR red]%s[/COLOR]" % _L(30865), isFolder=True,
-             function="refresh_channels", group=group)
+             function="refresh_channels")
 
     entries = []
     for name, urls in results.items():
@@ -712,8 +552,8 @@ def show_channels(params):
 
 
 def refresh_channels(params):
-    """Force-refresh a group's channel list with progress, then reload."""
-    group = params.getValue('group') or "Germany"
+    """Senderliste von GROUP mit Fortschrittsanzeige frisch abrufen, dann neu laden."""
+    group = GROUP
 
     progress = xbmcgui.DialogProgress()
     progress.create(_L(30842), _L(30861) % group)
@@ -743,25 +583,23 @@ def refresh_channels(params):
 
 
 # =============================================================================
-# PLAYBACK  (native Kodi player — no inputstream.ffmpegdirect)
+# WIEDERGABE  (Kodi-Player; HLS ueber InputStream Adaptive, wenn dieses Addon
+#              aktiv ist — player.applyIsa —, sonst nativ, kein ffmpegdirect)
 # =============================================================================
 
 def _build_play_path(url, headers):
-    """Append request headers to the stream URL using Kodi's pipe syntax."""
+    """Kopfzeilen in Kodis Pipe-Schreibweise an die Stream-Adresse haengen."""
     if not headers:
         return url
     return url + '|' + urlencode(headers)
 
 
 def play(params):
-    """Resolve and play a channel via Kodi's native player."""
+    """Sender aufloesen und abspielen (InputStream Adaptive, wenn aktiv, sonst nativ)."""
     name = params.getValue('name')
     if name:
         from urllib.parse import unquote_plus
         name = unquote_plus(name)
-    group = params.getValue('group')
-    group = group if group else None
-
     urls = None
     urls_param = params.getValue('urls')
     if urls_param:
@@ -774,13 +612,6 @@ def play(params):
     if urls is None:
         if _channels_cache is not None and name in _channels_cache:
             urls = _channels_cache[name]
-        elif group:
-            try:
-                group_channels = getchannels_by_group(group)
-                urls = group_channels.get(name)
-            except Exception as e:
-                logger.error("[vavoo] failed to fetch group %s: %s" % (group, e))
-                return
         if not urls:
             _error_dialog(_L(30853), _L(30854) % name)
             return
@@ -800,12 +631,14 @@ def play(params):
     except Exception as e:
         progress.close()
         logger.error("[vavoo] failed to resolve stream %s: %s" % (stream_index + 1, e))
-        if "Authentication failed" not in str(e):
-            _error_dialog(_L(30855), _L(30856))
+        _error_dialog(_L(30855), _L(30856))
         return
 
     progress.close()
 
+    # None: die Stream-Adresse hat nicht geantwortet (_follow_stream_url) — kein
+    # Playerstart, die Meldung sagt, einen anderen Stream zu nehmen oder die
+    # Liste zu aktualisieren.
     if not resolved_url:
         _error_dialog(_L(30855), _L(30856))
         return
@@ -814,10 +647,13 @@ def play(params):
     display_title = "%s (%s/%s)" % (name, stream_index + 1, total) if total > 1 else name
 
     listitem = xbmcgui.ListItem(display_title, path=play_path)
-    # Native Kodi player: tell Kodi the format so it demuxes HLS directly.
+    # Nativer Kodi-Player: Kodi das Format nennen, damit es HLS direkt demuxt.
     if '.m3u8' in resolved_url:
         listitem.setMimeType('application/vnd.apple.mpegurl')
         listitem.setContentLookup(False)
+    # HLS ueber InputStream Adaptive, wenn es aktiv ist; die Kopfzeilen wandern
+    # dann aus der Pipe in die ListItem-Properties.
+    _path, use_isa = applyIsa(listitem, play_path)
     try:
         vtag = listitem.getVideoInfoTag()
         vtag.setMediaType('video')
@@ -828,29 +664,29 @@ def play(params):
     listitem.setProperty("IsPlayable", "true")
 
     xbmcplugin.setResolvedUrl(_handle(), True, listitem)
+    if use_isa:
+        # Neueres ISA zeigt ein eigenes, blockierendes Fehlerfenster, solange der
+        # Player noch oeffnet (toter Sender); startPlayer schliesst es. Nur bis
+        # zum ersten Bild warten: ein Warten bis zum Ende der Wiedergabe hielte
+        # beim Umschalten jedes Skript am Leben (gemessen 15.10.2026). Die native
+        # Wiedergabe bleibt wie bisher, ohne Warten.
+        cPlayer().startPlayer(isa=True, untilAv=True)
 
 
 # =============================================================================
-# DISPATCH
+# AUFRUFE VERTEILEN
 # =============================================================================
 
 def dispatch(function, params):
-    """Route a vavootv callback to the right handler."""
-    if function in ('load', 'show_countries', '', False, None):
-        show_countries(params)
-    elif function == 'refresh_countries':
-        refresh_countries(params)
-    elif function == 'channelsbycategory':
-        show_channels(params)
-    elif function == 'refresh_channels':
+    """Einen vavootv-Rueckruf an die passende Funktion weiterleiten.
+
+    Alles ohne eigenen Zweig landet in der Senderliste: der Hauptmenuepunkt
+    ('load'), alte Favoriten auf 'channelsbycategory' und die frueheren
+    Laender-Funktionen.
+    """
+    if function == 'refresh_channels':
         refresh_channels(params)
     elif function == 'play':
         play(params)
     else:
-        show_countries(params)
-
-
-# Entry point used by the main-menu element (site=vavootv&function=load).
-def load():
-    from resources.lib.handler.parameterHandler import ParameterHandler
-    show_countries(ParameterHandler())
+        show_channels(params)

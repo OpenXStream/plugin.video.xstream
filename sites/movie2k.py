@@ -2,13 +2,6 @@
 # Python 3
 
 # Always pay attention to the translations in the menu!
-# HTML LangzeitCache hinzugefügt
-# showGenres:     24 Stunden
-# showEntries:     6 Stunden
-# showUpdates:     1 Stunde
-# showTiles:       6 Stunden
-# showSeasons:     6 Stunden
-# showEpisodes:    4 Stunden
 
 import re
 
@@ -158,7 +151,6 @@ def showGenres():
     # von selbst im Menü auftaucht.
     params = ParameterHandler()
     oRequest = cRequestHandler(_requestUrl(params.getValue('sUrl')))
-    oRequest.cacheTime = 60 * 60 * 24  # 24 Stunden
     sHtmlContent = oRequest.request()
     isMatch, aResult = cParser.parse(sHtmlContent, _RE_GENRE)
     if not isMatch:
@@ -179,10 +171,10 @@ def _absoluteUrl(sUrl):
     # stehen im Markup als HTML-Entität ("Don&#x27;t Say Good Luck") und werden hier
     # aufgelöst, sonst landet die Entität später in der Adresse und die Seite
     # antwortet mit ihrer 'Content Not Found'-Seite.
-    # BEWUSST NICHT kodiert: die Adresse wandert als Parameter weiter, und
-    # ParameterHandler.getParameterAsUri() jagt jeden Wert durch unquote_plus —
-    # eine hier gesetzte Kodierung wäre auf dem Weg wieder aufgelöst. Kodiert wird
-    # deshalb erst unmittelbar vor dem Abruf in _requestUrl.
+    # Nicht kodiert: die Adresse wandert als Parameter weiter, kodiert wird an
+    # EINER Stelle unmittelbar vor dem Abruf (_requestUrl). Bis zum 02.11.2026 war
+    # das auch noetig, weil ParameterHandler.getParameterAsUri() jeden Wert durch
+    # unquote_plus jagte und eine Kodierung hier auf dem Weg wieder aufgelöst hätte.
     sUrl = cUtil.unescape(sUrl)
     if sUrl.startswith('//'):
         sUrl = 'https:' + sUrl
@@ -203,9 +195,18 @@ def _requestUrl(sUrl):
     # 2 von 891 Titeln, /stream/x-<id> liefert 200). Der Slash wird deshalb hier,
     # an der einzigen Abrufstelle, zum Bindestrich — so heilen auch Favoriten und
     # Cache-Eintraege mit der alten Adresse. Die Query bleibt unangetastet.
-    # Dasselbe fuer '#' im Slug ("#9" als /stream/#9-2009-<id>, Audit 07.09.2026):
+    # Dasselbe fuer '#' im Slug ("#9" als /stream/#9-2009-<id>, 07.09.2026):
     # urllib wirft alles ab '#' als Fragment weg und die Seite antwortet mit 404;
     # /stream/-9-2009-<id> liefert 200. Deshalb endet der Slug-Teil erst am '?'.
+    # '?' im Titel ("Ich sterbe. Kommst du?" als /stream/ich-sterbe.-kommst-du?-2025-<id>,
+    # 13.10.2026: 35 Filme im Katalog): die Seite schreibt es unkodiert in ihren
+    # eigenen Link, urllib nimmt es fuer den Beginn der Query, die Seite bekommt den Pfad
+    # ohne ID und antwortet mit "Content Not Found". Ein '?', hinter dem bis zum naechsten
+    # '?' kein '=' folgt, gehoert zum Slug und wird ebenfalls zum Bindestrich — die echte
+    # Query (?season=1) bleibt. Laeuft vor der Slash-/#-Heilung, damit die bis zum Ende
+    # des Slugs greift.
+    if '/stream/' in sUrl:
+        sUrl = re.sub(r'\?(?![^?]*=)', '-', sUrl)
     sUrl = re.sub(r'(/stream/)([^?]*)', lambda m: m.group(1) + m.group(2).replace('/', '-').replace('#', '-'), sUrl)
     return cParser.urlEncode(sUrl, safe=':/?&=%#+')
 
@@ -258,7 +259,6 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False):
     params = ParameterHandler()
     if not entryUrl: entryUrl = params.getValue('sUrl')
     oRequest = cRequestHandler(_requestUrl(entryUrl), ignoreErrors=(sGui is not False))
-    oRequest.cacheTime = 60 * 60 * 6  # 6 Stunden
     sHtmlContent = oRequest.request()
     # Kinofilme (Startseite) und Beliebt (/tv) sind Tabs ohne eigene Adresse —
     # hier wird nur ihr Container gelesen, damit die Nachbar-Tabs draußen bleiben.
@@ -345,7 +345,6 @@ def showUpdates():
     # automatisch draußen, am Titel wird nichts geschnitten.
     params = ParameterHandler()
     oRequest = cRequestHandler(_requestUrl(params.getValue('sUrl')))
-    oRequest.cacheTime = 60 * 60  # 1 Stunde — die Liste wächst laufend
     sHtmlContent = _paneContent(oRequest.request(), _PANE_UPDATES)
     isMatch, aResult = cParser.parse(sHtmlContent, _RE_UPDATE)
     if not isMatch:
@@ -384,7 +383,6 @@ def showTiles():
     # die übergebene Adresse.
     params = ParameterHandler()
     oRequest = cRequestHandler(_requestUrl(params.getValue('sUrl')))
-    oRequest.cacheTime = 60 * 60 * 6  # 6 Stunden
     sHtmlContent = _paneContent(oRequest.request(), _PANE_POPULAR)
     isMatch, aResult = cParser.parse(sHtmlContent, _RE_TILE)
     if not isMatch:
@@ -431,7 +429,6 @@ def showSeasons():
     sThumbnail = params.getValue('sThumbnail')
     sYear = params.getValue('sYear') or ''
     oRequest = cRequestHandler(_requestUrl(sUrl))
-    oRequest.cacheTime = 60 * 60 * 6  # 6 Stunden
     sHtmlContent = oRequest.request()
     # Die Staffelliste kommt aus der Auswahlbox der Seite. Eine Staffelnummer zu
     # raten geht schief: eine zu hohe Nummer liefert kommentarlos wieder Staffel 1.
@@ -474,7 +471,6 @@ def showEpisodes():
     sSeason = params.getValue('season')
     sShowName = params.getValue('TVShowTitle') or sName
     oRequest = cRequestHandler(_requestUrl(sUrl))
-    oRequest.cacheTime = 60 * 60 * 4  # 4 Stunden
     sHtmlContent = oRequest.request()
     # Titel und Beschreibung der Folge liefert die Auswahlbox gleich mit, ein
     # zusätzlicher Abruf je Folge ist dadurch nicht nötig.
@@ -486,9 +482,8 @@ def showEpisodes():
         return
     total = len(aResult)
     for sEpisodeId, sEpisodeName, sEpisodeDesc, sEpisode in aResult:
-        sTitle = '%s %s' % (cConfig().getLocalizedString(30513), sEpisode)
-        if sEpisodeName.strip():
-            sTitle = '%s - %s' % (sTitle, cUtil.unescape(cUtil.removeHtmlTags(sEpisodeName)).strip())
+        # Eine Form auf allen Sites ("S01E05 - Titel", cParser.episodeLabel)
+        sTitle = cParser.episodeLabel(sSeason, sEpisode, cUtil.unescape(cUtil.removeHtmlTags(sEpisodeName)))
         oGuiElement = cGuiElement(sTitle, SITE_IDENTIFIER, 'showHosters')
         oGuiElement.setTVShowTitle(sShowName)
         oGuiElement.setSeason(sSeason)
@@ -536,13 +531,13 @@ def showHosters():
 
 def _addHoster(hosters, sHosterUrl, sQuality):
     # Die Seite schreibt vereinzelt Mirror-Adressen mit nur einem Schraegstrich
-    # ('https:/doodstream.com/...', belegt an Rick and Morty S1 E1). Ohne
+    # hinter 'https:' (belegt an Rick and Morty S1 E1). Ohne
     # Reparatur haelt der Blocked-Check die Adresse fuer einen unbekannten
     # Hoster und die Folge erscheint faelschlich ohne Quelle.
     sHosterUrl = re.sub(r'^(https?:)/+', r'\1//', sHosterUrl)
     # Der Blocked-Check bekommt die volle URL und liefert den Hostnamen zurueck.
-    # Das Label der Seite taugt dafuer nicht: bei Filmen steht dort 'Vinovo', bei
-    # Folgen 'vinovo.to' — nur die URL ist in beiden Wegen verlaesslich.
+    # Das Label der Seite taugt dafuer nicht: bei Filmen steht dort der Hoster-Name,
+    # bei Folgen seine Domain — nur die URL ist in beiden Wegen verlaesslich.
     isBlocked, sHosterName = cConfig().isBlockedHoster(sHosterUrl)  # Hoster aus settings.xml oder deaktivierten Resolver ausschließen
     if isBlocked: return hosters
     sDisplayedName = sHosterName

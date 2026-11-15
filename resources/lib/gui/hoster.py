@@ -10,11 +10,12 @@ import xbmc
 import xbmcgui 
 import xbmcplugin
 from resources.lib.handler.parameterHandler import ParameterHandler
+from resources.lib.handler.requestHandler import quietWindows
 from resources.lib.gui.guiElement import cGuiElement
 from resources.lib.gui.gui import cGui
 from resources.lib.config import cConfig
 from resources.lib.captcha.captcha_schemas import clear_gate
-from resources.lib.player import cPlayer
+from resources.lib.player import cPlayer, applyIsa, probeStream
 from resources.lib.logger import logger
 
 
@@ -35,22 +36,31 @@ def _quality_to_res(value):
 
 
 class cHosterGui:
-    SITE_NAME = 'cHosterGui'
-
     def __init__(self):
-        self.maxHoster = int(cConfig().getSetting('maxHoster', 100))
         self.dialog = False
+        self._attempts = 0  # Uebergaben an den Player in diesem Lauf (Auto-Modus: je Hoster eine)
+        self._isa = False   # der laufende Versuch spielt ueber InputStream Adaptive (player.applyIsa)
+        self._gemeldet = False  # eine Hoster-Meldung (_melden) kam in diesem Lauf schon
+
+    def _melden(self, iText, iSeconds):
+        # Hoster-Meldung als Einblendung, mit Merker fuer streamAuto: hat am Ende kein Hoster gespielt und kam bis dahin
+        # keine Meldung, sagt streamAuto es einmal (30141). Bis zum 02.11.2026 blieb xStream stumm, wenn jede Hosterlink-
+        # Funktion ohne Link zurueckkam (toter Hoster, stiller Abruf) — der Nutzer sah nur Kodis eigenes Fenster
+        # „Wiedergabe fehlgeschlagen" (02.11.2026 nachgestellt).
+        self._gemeldet = True
+        cGui().showError('xStream', cConfig().getLocalizedString(iText), iSeconds)
 
     def _resolveWithCaptcha(self, resolver, mediaUrl):
         # Normalfall ist ein einziger resolve()-Aufruf. Steht auf der
         # Hoster-Seite ein Gate, das ResolveURL nicht kennt (Cloudflare Turnstile
         # bei Dropload/dr0pstream seit 09/2026 — in reinem Python nicht loesbar),
         # findet es dort keinen Stream. Dann prueft clear_gate (die Gate-Muster
-        # in captcha_schemas.py) die Seite EINMAL, raeumt das erkannte Gate und
-        # es wird genau einmal neu aufgeloest; das Freigabe-Cookie liegt danach
-        # im Jar von ResolveURLs Net, deshalb bekommt der unveraenderte Resolver
-        # die Playerseite. Ohne hinterlegten Schluessel kostet der Weg nichts,
-        # dann wird die Seite nicht geladen.
+        # in captcha_schemas.py) die Seite EINMAL, raeumt das erkannte Gate, und
+        # _resolveAfterCaptcha loest neu auf (hoechstens zwei Abrufe, kein
+        # zweites Gate); das Freigabe-Cookie liegt danach im Jar von ResolveURLs
+        # Net, deshalb bekommt der unveraenderte Resolver die Playerseite. Ohne
+        # Schalter oder hinterlegten Schluessel kostet der Weg nichts, dann wird
+        # die Seite nicht geladen.
         try:
             link = resolver.resolve(mediaUrl)
         except resolver.resolver.ResolverError:
@@ -74,8 +84,18 @@ class cHosterGui:
             return link
         return resolver.resolve(mediaUrl)
 
+    def _hosterLink(self, function, link):
+        # Die Hosterlink-Funktion der Site (getHosterUrl). Bei filmo, aniworld, serienstream und burningseries
+        # ruft sie selbst ab (Weiterleitung, Token); scheitert so ein Abruf, liefert sie keinen Link, und
+        # _getInfoAndResolve meldet das mit EINER Einblendung (30134); liefert eine Site gar nichts, bleibt der Hoster
+        # still, und streamAuto sagt es am Ende einmal, wenn keiner gespielt hat. Das Fehlerfenster des requestHandlers
+        # (Adresse + Fehlertext) bleibt hier deshalb aus — es stand sonst zusaetzlich da und blockierte im
+        # Auto-Modus je totem Hoster einmal (filmo 26.10.2026: zwei VOE-Links, zwei Fenster); die Adresse steht
+        # weiter im Log. Seitenabrufe davor (Hosterliste) laufen weiter mit Fenster.
+        with quietWindows():
+            return function(link)
+
     def _getInfoAndResolve(self, siteResult):
-        oGui = cGui()
         params = ParameterHandler()
         mediaUrl = params.getValue('sMediaUrl')
         fileName = params.getValue('MovieTitle')
@@ -94,32 +114,32 @@ class cHosterGui:
                     logger.info('-> [hoster]: resolve: hoster: %s - mediaID: %s' % (siteResult['host'], mediaId))
                     link = resolver.HostedMediaFile(host=siteResult['host'].lower(), media_id=mediaId).resolve()
                 else:
-                    oGui.showError('xStream', cConfig().getLocalizedString(30134), 5)
+                    self._melden(30134, 5)
                     return False
             elif mediaUrl:
                 logger.info('-> [hoster]: resolve: ' + mediaUrl)
                 link = self._resolveWithCaptcha(resolver, mediaUrl)
             else:
-                oGui.showError('xStream', cConfig().getLocalizedString(30134), 5)
+                self._melden(30134, 5)
                 return False
         except resolver.resolver.ResolverError as e:
             logger.error('-> [hoster]: ResolverError: %s' % e)
-            oGui.showError('xStream', cConfig().getLocalizedString(30135), 7)
+            self._melden(30135, 7)
             return False
         if link is False:
             # ResolveURL liefert False OHNE ResolverError, wenn kein Resolver auf die
             # Adresse passt (z.B. eine neue Hoster-Domain, die Gujal noch nicht kennt)
             # oder der zustaendige Resolver ohne Ausnahme leer ausgeht. Frueher blieb
             # das komplett stumm: der Nutzer klickte und es passierte sichtbar nichts
-            # (Audit 01.09.2026, filmpalast/VIDARA auf odysseusa.cc). Gleiche
+            # (01.09.2026, filmpalast/VIDARA auf einer Spiegeldomain). Gleiche
             # Einblendung wie beim ResolverError, damit der Auto-Weg wie bisher je
             # totem Hoster nur eine Einblendung zeigt und kein Fenster.
             logger.error('-> [hoster]: no resolver result for %s' % mediaUrl)
             bKnown = bool(mediaUrl) and resolver.HostedMediaFile(url=mediaUrl).valid_url()
-            oGui.showError('xStream', cConfig().getLocalizedString(30135 if bKnown else 30144), 7)
+            self._melden(30135 if bKnown else 30144, 7)
             return False
         if link is not False:
-            data = {'title': fileName, 'season': params.getValue('season'), 'episode': params.getValue('episode'), 'showTitle': params.getValue('TVShowTitle'), 'thumb': params.getValue('thumb'), 'link': link, 'imdb_id': params.getValue('imdb_id'), 'year': params.getValue('year'), 'mediaType': params.getValue('mediaType')}
+            data = {'title': fileName, 'season': params.getValue('season'), 'episode': params.getValue('episode'), 'showTitle': params.getValue('TVShowTitle'), 'thumb': params.getValue('thumb'), 'link': link, 'imdb_id': params.getValue('imdb_id'), 'tmdb_id': params.getValue('tmdbID'), 'year': params.getValue('year'), 'mediaType': params.getValue('mediaType')}
             return data
         return False
 
@@ -127,6 +147,13 @@ class cHosterGui:
         logger.info('-> [hoster]: attempt to play file')
         data = self._getInfoAndResolve(siteResult)
         if not data:
+            return False
+        # Vorab-Abruf der Stream-Adresse (player.probeStream, seit dem 05.11.2026): antwortet
+        # sie nicht, startet der Player nicht — eine Einblendung statt Kodis Wartezeit, im
+        # Auto-Modus kommt der naechste Hoster; das Fortschrittsfenster bleibt solange offen.
+        bAnswered, head = probeStream(data['link'])
+        if not bAnswered:
+            self._melden(30921, 7)
             return False
         if self.dialog:
             try:
@@ -137,12 +164,12 @@ class cHosterGui:
         logger.info('-> [hoster]: play file link: ' + str(data['link']))
         list_item = xbmcgui.ListItem(path=data['link'])
         # MimeType setzen damit Kodi das Format nativ erkennt
-        if '.mpd' in data['link']:
-            list_item.setMimeType('application/dash+xml')
-            list_item.setContentLookup(False)
-        elif '.m3u8' in data['link']:
+        if '.m3u8' in data['link']:
             list_item.setMimeType('application/vnd.apple.mpegurl')
             list_item.setContentLookup(False)
+        # HLS ueber InputStream Adaptive, wenn es aktiv ist; die Adresse kommt
+        # dann ohne Pipe zurueck, die Header stehen am ListItem.
+        data['link'], self._isa = applyIsa(list_item, data['link'], head)
 
         if 'youtube' in data['link']:
             import time
@@ -150,8 +177,31 @@ class cHosterGui:
         if data['thumb']:
             list_item.setArt({'thumb': data['thumb']})
 
-        vtag = list_item.getVideoInfoTag()
-        # Korrekten MediaType setzen (für Trakt.TV Scrobbling)
+        self._setVideoInfo(list_item.getVideoInfoTag(), data)
+
+        list_item.setProperty('IsPlayable', 'true')
+        if self._attempts:
+            # Ausweich-Hoster im Auto-Modus: Kodis Fenster "Wiedergabe nicht
+            # moeglich" des vorigen Hosters hat streamAuto schon geschlossen;
+            # hier noch einmal, falls Kodi es erst danach gezeichnet hat — es
+            # bliebe sonst vor der neuen Wiedergabe stehen, bis der Nutzer OK
+            # drueckt.
+            xbmc.executebuiltin('Dialog.Close(okdialog,true)')
+        # Den Plugin-Handle nimmt Kodi nur EINMAL an: nach dem ersten
+        # setResolvedUrl gibt er ihn frei, jeder weitere Aufruf verpufft ohne
+        # Meldung, und startPlayer() wartete dann vergeblich. Jeder weitere
+        # Hoster startet deshalb direkt ueber den Player.
+        if cGui().pluginHandle > 0 and not self._attempts:
+            xbmcplugin.setResolvedUrl(cGui().pluginHandle, True, list_item)
+        else:
+            xbmc.Player().play(data['link'], list_item)
+        self._attempts += 1
+        return cPlayer().startPlayer(isa=self._isa)
+
+    def _setVideoInfo(self, vtag, data):
+        """Medientyp, Titel, Serie mit Staffel und Folge, Jahr und IDs auf dem ListItem der Wiedergabe (play)."""
+        # Korrekten MediaType setzen (movie, episode statt video). Trakt bestimmt den Typ bei
+        # Plugin-Wiedergaben selbst aus Staffel und Folge (Quelle unten).
         if data.get('showTitle') and data.get('episode'):
             vtag.setMediaType('episode')
         elif data.get('mediaType') in ('movie', 'episode', 'tvshow', 'season'):
@@ -174,7 +224,13 @@ class cHosterGui:
                 try:
                     vtag.setEpisode(int(data['episode']))
                 except: pass
-        # Jahr und IMDb ID setzen (für Trakt.TV Scrobbling)
+        # Jahr, IMDb- und TMDB-ID setzen: wer die IDs der Wiedergabe liest, findet den Titel damit
+        # direkt (mdblist und OpenSubtitles laut Heptamers Changelog vom 01.11.2026). Trakt liest
+        # bei Plugin-Wiedergaben keine IDs, nur Titel, Jahr, Staffel und Folge (script.trakt,
+        # kodiUtilities.getInfoLabelDetails, Master f8f4ad9 vom 26.10.2026, gelesen 01.11.2026).
+        # Die IMDb-ID bleibt die Standard-ID: VideoPlayer.IMDBNumber liefert die Standard-ID, mit
+        # TMDB als Standard stuende dort eine TMDB-Nummer (Kodi 21.3 VideoGUIInfo.cpp und
+        # VideoInfoTag.cpp, gelesen 01.11.2026).
         if data.get('year'):
             try:
                 vtag.setYear(int(data['year']))
@@ -183,36 +239,18 @@ class cHosterGui:
             try:
                 vtag.setUniqueID(str(data['imdb_id']), 'imdb', True)
             except: pass
-
-        list_item.setProperty('IsPlayable', 'true')
-        if cGui().pluginHandle > 0:
-            xbmcplugin.setResolvedUrl(cGui().pluginHandle, True, list_item)
-        else:
-            xbmc.Player().play(data['link'], list_item)
-        return cPlayer().startPlayer()
-
-    def addToPlaylist(self, siteResult=False):
-        oGui = cGui()
-        logger.info('-> [hoster]: attempt addToPlaylist')
-        data = self._getInfoAndResolve(siteResult)
-        if not data: return False
-        logger.info('-> [hoster]: addToPlaylist file link: ' + str(data['link']))
-        oGuiElement = cGuiElement()
-        oGuiElement.setSiteName(self.SITE_NAME)
-        oGuiElement.setMediaUrl(data['link'])
-        oGuiElement.setTitle(data['title'])
-        if data['thumb']:
-            oGuiElement.setThumbnail(data['thumb'])
-        if data['showTitle']:
-            oGuiElement.setEpisode(data['episode'])
-            oGuiElement.setSeason(data['season'])
-            oGuiElement.setTVShowTitle(data['showTitle'])
-        if self.dialog:
-            self.dialog.close()
-        oPlayer = cPlayer()
-        oPlayer.addItemToPlaylist(oGuiElement)
-        oGui.showInfo(cConfig().getLocalizedString(30136), cConfig().getLocalizedString(30137), 5)
-        return True
+        # Die TMDB-ID kommt als Parameter tmdbID mit, wenn der Eintrag eine traegt (TMDB Infos
+        # laden) — keine eigene TMDB-Abfrage. Gesetzt wird sie nur, wo sie sicher zum Titel
+        # gehoert: beim Film seine eigene (geerbte nimmt gui.__createItemUrl Filmen und Serien
+        # ab), bei der Folge einer echten Staffel die ID der Serie, wie bei Heptamer. Ohne
+        # Staffel (Staffel 0, Specials) passt die Zaehlung der Seite nicht sicher zu TMDB. Die Staffel kommt als
+        # Text; '0' ist nicht leer und lief bis zum 02.11.2026 deshalb als „mit Staffel" durch.
+        sMediaType = vtag.getMediaType()
+        sSeason = str(data.get('season') or '')
+        if data.get('tmdb_id') and (sMediaType == 'movie' or (sMediaType == 'episode' and sSeason.isdecimal() and int(sSeason) > 0)):
+            try:
+                vtag.setUniqueID(str(data['tmdb_id']), 'tmdb')
+            except: pass
 
     def _dedupeHosters(self, hosterList):
         """Doppelte Hoster-Eintraege entfernen — zentral fuer ALLE Sites.
@@ -221,13 +259,13 @@ class cHosterGui:
         entstehen auch wenn eine Site denselben Link zweimal im HTML listet.
         Reihenfolge bleibt erhalten — der erste Treffer gewinnt.
 
-        Vergleichsschluessel = normalisierte URL + Hoster-Name + Sprache.
-        WARUM nicht nur die URL: einige Sites (aniworld/serienstream ueber
-        den redirect/dl-Mechanismus) tragen fuer ALLE Hoster einer Episode
-        dasselbe data-link-target ein — die echte Unterscheidung liegt im
-        Namen (VOE/Doodstream/...) und der Sprache. Ein reiner URL-Vergleich
-        wuerde dort 7 von 8 Hostern faelschlich schlucken. Der Name und
-        (falls vorhanden) languageCode im Schluessel verhindern das.
+        Vergleichsschluessel = normalisierte URL + Hoster-Name + Sprache:
+        gleiche Adresse bei anderem Hoster-Namen oder anderer Sprache ist
+        keine Dublette. Die fruehere Begruendung, aniworld/serienstream
+        truegen fuer alle Hoster einer Folge dasselbe Weiterleitungsziel,
+        trifft heute nicht zu (gemessen 14.10.2026: eine aniworld-Folge
+        12 Hoster mit 12 verschiedenen Zielen, serienstream 3 mit 3) — der
+        Schluessel bleibt so, weil er mit eigenen Zielen nichts kostet.
         Schema-normalisiert (//host/x == https://host/x), damit dieselbe
         Datei aus zwei Quellen mit gleichem Namen als eine zaehlt.
 
@@ -341,7 +379,7 @@ class cHosterGui:
         function = getattr(plugin, function)
         self.dialog.update(10, cConfig().getLocalizedString(30140))
         if url:
-            siteResult = function(url)
+            siteResult = self._hosterLink(function, url)  # Hoster-Eintrag der Listenansicht
         else:
             siteResult = function()
         self.dialog.update(40)
@@ -374,8 +412,8 @@ class cHosterGui:
                 cGui().showInfo('xStream', cConfig().getLocalizedString(30144))
                 return False
             self.dialog.update(90)
-            if len(siteResult) > self.maxHoster:
-                siteResult = siteResult[:self.maxHoster]
+            # Ungekuerzt: die Einstellung „Max Hoster Eintraege" (nur Liste und Dialog, Standard 100, die laengsten Listen
+            # haben rund 8 Hoster) gibt es seit dem 01.11.2026 nicht mehr (so entschieden) — die besten stehen nach der Sortierung oben
             if cConfig().getSetting('hosterSelect') == 'List':
                 self.showHosterFolder(siteResult, siteName, functionName)
                 return
@@ -387,7 +425,7 @@ class cHosterGui:
                 siteResult = siteResult[0]
             logger.info(siteResult['link'])
             function = getattr(plugin, functionName)
-            siteResult = function(siteResult['link'])
+            siteResult = self._hosterLink(function, siteResult['link'])
             if not type(siteResult) is list:
                 temp = [siteResult]
                 siteResult = temp
@@ -408,11 +446,10 @@ class cHosterGui:
         # beim Nutzer. Bewusst NUR hier und nicht in _getInfoAndResolve: der
         # Auto-Weg (streamAuto -> __autoEnqueue) faengt selbst ab und probiert den
         # naechsten Hoster - dort wuerde eine Meldung je totem Hoster aufpoppen.
+        # Es gibt nur noch Abspielen: playMode 'enqueue' (Zur Abspielliste hinzufuegen) ist seit dem
+        # 01.11.2026 raus, ein Aufruf aus einem noch zwischengespeicherten Kontextmenue spielt deshalb ab.
         try:
-            if playMode == 'play':
-                self.play(siteResult)
-            elif playMode == 'enqueue':
-                self.addToPlaylist(siteResult)
+            self.play(siteResult)
         except Exception as e:
             logger.error('-> [hoster]: %s: %s' % (type(e).__name__, e))
             if self.dialog:
@@ -453,7 +490,7 @@ class cHosterGui:
                 self.dialog.close()
                 cGui().showInfo('xStream', cConfig().getLocalizedString(30144))
                 return False
-            # Im Auto-Modus wird BEWUSST nicht auf maxHoster gekuerzt: er probiert
+            # Im Auto-Modus wird BEWUSST nicht gekuerzt (schon vor dem Ausbau von maxHoster): er probiert
             # die Hoster der Reihe nach durch bis einer spielt, eine Begrenzung
             # nimmt ihm nur Ausweichkandidaten. Die frueher hier stehende Kuerzung
             # war ohnehin wirkungslos - sie traf siteResult, durchlaufen wird hosters.
@@ -462,28 +499,36 @@ class cHosterGui:
             total = len(hosters)
             for count, hoster in enumerate(hosters):
                 if self.dialog.iscanceled() or xbmc.Monitor().abortRequested() or check: return
+                if self._attempts:
+                    # Ein Hoster wurde schon an den Player uebergeben und ist
+                    # durchgefallen. Liess sich seine Adresse nicht oeffnen,
+                    # zeigt Kodi das Fenster "Wiedergabe nicht moeglich" und
+                    # wartet auf OK. Weil noch ein Hoster folgt, geht es sofort
+                    # zu und blitzt nur kurz auf; play() schliesst es vor der
+                    # Uebergabe ein zweites Mal, falls Kodi es erst nach diesem
+                    # Aufruf zeichnet. Nach dem letzten Hoster bleibt es stehen.
+                    xbmc.executebuiltin('Dialog.Close(okdialog,true)')
                 percent = (count + 1) * 100 // total
                 try:
                     logger.info('-> [hoster]: try hoster %s' % hoster['name'])
                     self.dialog.create('xStream', cConfig().getLocalizedString(30147))
                     self.dialog.update(percent, cConfig().getLocalizedString(30147) + ' %s' % hoster['name'])
                     function = getattr(plugin, functionName)
-                    siteResult = function(hoster['link'])
+                    siteResult = self._hosterLink(function, hoster['link'])
                     check = self.__autoEnqueue(siteResult, playMode)
                     if check:
                         return True
                 except:
                     self.dialog.update(percent, cConfig().getLocalizedString(30148) % hoster['name'])
                     logger.error('-> [hoster]: playback with hoster %s failed' % hoster['name'])
-        # field "resolved" marks streamlinks
-        elif 'resolved' in siteResult[0]:
-            for stream in siteResult:
-                try:
-                    if self.__autoEnqueue(siteResult, playMode):
-                        self.dialog.close()
-                        return True
-                except:
-                    pass
+            # Kein Hoster hat gespielt. Kam ein Hoster bis zum Player, steht Kodis Fenster „Wiedergabe nicht moeglich" (oben);
+            # gab es je totem Hoster eine Einblendung (_melden) oder eine des requestHandlers, reicht das. Blieb alles
+            # still — jede Hosterlink-Funktion kam ohne Link zurueck —, sagt es diese eine Einblendung; Kodi zeigt fuer
+            # den nicht aufgeloesten Eintrag danach sein eigenes Fenster (seit dem 02.11.2026).
+            self.dialog.close()
+            if not self._attempts and not self._gemeldet:
+                cGui().showInfo('xStream', cConfig().getLocalizedString(30141))
+            return False
 
     def _chooseHoster(self, siteResult):
         dialog = xbmcgui.Dialog()
@@ -530,22 +575,17 @@ class cHosterGui:
         oGui.setEndOfDirectory()
 
     def __autoEnqueue(self, partList, playMode):
+        # Spielt den Link, den die Hosterlink-Funktion der Site liefert; False laesst streamAuto den
+        # naechsten Hoster nehmen. Weitere Teile eines Mehrteilers kamen bis zum 01.11.2026 in die
+        # Abspielliste — der Weg ist mit „Zur Abspielliste hinzufuegen" raus; jede Site liefert genau
+        # einen Link (alle 16 Hosterlink-Funktionen gezaehlt, 01.11.2026). playMode spielt keine Rolle
+        # mehr, es gibt nur noch Abspielen (siehe stream).
         if not partList:
             return False
-        for i in range(len(partList) - 1, -1, -1):
-            try:
-                if playMode == 'play' and i == 0:
-                    if not self.play(partList[i]):
-                        return False
-                elif playMode == 'enqueue' or (playMode == 'play' and i > 0):
-                    self.addToPlaylist(partList[i])
-            except:
+        try:
+            if not self.play(partList[0]):
                 return False
+        except:
+            return False
         logger.info('-> [hoster]: autoEnqueue successful')
         return True
-
-
-class Hoster:
-    def __init__(self, name, link):
-        self.name = name
-        self.link = link

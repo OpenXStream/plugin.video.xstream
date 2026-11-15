@@ -19,22 +19,53 @@ from resources.lib.tools import cParser, cUtil, infoDialog
 from resources.lib.gui.guiElement import cGuiElement
 from resources.lib.config import cConfig
 from resources.lib.gui.gui import cGui
-from resources.lib.captcha.captcha_helper import captcha_ready, solve_recaptcha, extract_recaptcha_sitekey
+from resources.lib.captcha.captcha_helper import captcha_key, captcha_ready, solve_recaptcha, extract_recaptcha_sitekey
 
 
 SITE_IDENTIFIER = 'burningseries'
 SITE_NAME = 'BurningSeries'
 SITE_ICON = 'burningseries.png'
 
+# Ohne 2Captcha-Schluessel (captcha_key: einer aus lauter Leerzeichen zaehlt als keiner) schaltet
+# sich die Site ab: ihre Hoster liegen hinter reCAPTCHA.
+# Was HIER abgeschaltet wird, merkt sich plugin_burningseries_captchaoff. Steht der Schluessel
+# danach drin, schaltet der naechste Import genau diese Settings wieder ein — beim Kodi-Start
+# (Domain-Check des Dienstes, der jedes Site-File importiert), beim Domain Check von Hand und
+# ueber die Support-Info. Was der Nutzer selbst ausgeschaltet hat, steht nicht im Merker und
+# bleibt aus. Der Block steht vor dem Lesen der globalen Suche, damit SITE_GLOBAL_SEARCH den
+# Stand nach dem Schalten sieht.
+# Vorgabewert des Merkers ist 'neu' (noch nie gelaufen). Ohne Schluessel hat der Code bis zum
+# 01.11.2026 die Site bei JEDEM Start abgeschaltet — aus war dann keine Wahl des Nutzers. Beim
+# ersten Start gelten deshalb ohne Schluessel alle drei als vom Captcha abgeschaltet und gehen mit
+# dem Schluessel an wie bei einer Neuinstallation; mit Schluessel bleibt alles, wie es ist (so entschieden
+# am 01.11.2026). Eine geaenderte Vorgabe allein erreicht Bestandsnutzer nicht: Kodi behaelt
+# gespeicherte Werte (Kodi 21.3, 01.11.2026).
+_CAPTCHA_SETTINGS = ('plugin_burningseries', 'global_search_burningseries', 'plugin_burningseries_checkDomain')
+_CAPTCHA_OFF = 'plugin_burningseries_captchaoff'
+_sCaptchaOff = cConfig().getSetting(_CAPTCHA_OFF)
+if _sCaptchaOff == 'neu':
+    _aCaptchaOff = [] if captcha_key() else list(_CAPTCHA_SETTINGS)
+else:
+    _aCaptchaOff = [s for s in _sCaptchaOff.split(',') if s in _CAPTCHA_SETTINGS]
+if not captcha_key():
+    _aCaptchaNew = [s for s in _CAPTCHA_SETTINGS if cConfig().getSetting(s) != 'false']
+    for _sSetting in _aCaptchaNew:
+        cConfig().setSetting(_sSetting, 'false')
+    _sCaptchaNew = ','.join(s for s in _CAPTCHA_SETTINGS if s in _aCaptchaOff or s in _aCaptchaNew)
+    if _sCaptchaNew != _sCaptchaOff:
+        cConfig().setSetting(_CAPTCHA_OFF, _sCaptchaNew)
+    logger.info('-> [SitePlugin]: 2Captcha API Key not set')
+else:
+    for _sSetting in _aCaptchaOff:
+        cConfig().setSetting(_sSetting, 'true')
+    if _sCaptchaOff:
+        cConfig().setSetting(_CAPTCHA_OFF, '')
+    if _aCaptchaOff:
+        logger.info('-> [SitePlugin]: 2Captcha API Key set, switched on again: %s' % ', '.join(_aCaptchaOff))
+
 if cConfig().getSetting('global_search_' + SITE_IDENTIFIER) == 'false':
     SITE_GLOBAL_SEARCH = False
     logger.info('-> [SitePlugin]: globalSearch for %s is deactivated.' % SITE_NAME)
-
-if cConfig().getSetting('2captcha.pass') == '':
-    cConfig().setSetting('plugin_burningseries', 'false')
-    cConfig().setSetting('global_search_burningseries', 'false')
-    cConfig().setSetting('plugin_burningseries_checkDomain', 'false')
-    logger.info('-> [SitePlugin]: 2Captcha API Key not set')
 
 DOMAIN = cConfig().getSetting('plugin_' + SITE_IDENTIFIER + '.domain', 'burningseries.ac')
 STATUS = cConfig().getSetting('plugin_' + SITE_IDENTIFIER + '_status')
@@ -90,10 +121,10 @@ def showNeues():
     oGui = cGui()
     params = ParameterHandler()
     params.setParam('sUrl', URL_NEW_SERIES)
-    oGui.addFolder(cGuiElement(cConfig().getLocalizedString(30511), SITE_IDENTIFIER, 'showNewSeries'), params)    # Serien (30511/30557 wie SerienStream und AniWorld)
+    oGui.addFolder(cGuiElement(cConfig().getLocalizedString(30511), SITE_IDENTIFIER, 'showNewSeries'), params)    # Serien (30511 wie SerienStream; AniWorld fuehrt dort Animes, 30561)
     params = ParameterHandler()
     params.setParam('sUrl', URL_NEW_EPISODES)
-    oGui.addFolder(cGuiElement(cConfig().getLocalizedString(30557), SITE_IDENTIFIER, 'showNewEpisodes'), params)  # Episoden
+    oGui.addFolder(cGuiElement(cConfig().getLocalizedString(30557), SITE_IDENTIFIER, 'showNewEpisodes'), params)  # Episoden (30557 wie SerienStream und AniWorld)
     oGui.setEndOfDirectory()
 
 
@@ -290,7 +321,7 @@ def showSeasons():
     if isThumbnail and sThumbnail.startswith('/'):
         sThumbnail = URL_MAIN + sThumbnail
 
-    # Aki: Year aus Produktionsjahre-Feld der Detail-Seite extrahieren
+    # Year aus Produktionsjahre-Feld der Detail-Seite extrahieren
     sYear = ''
     year_match = re.search(r'<span>Produktionsjahre</span>\s*<p>\s*<em>(\d{4})', sHtmlContent)
     if year_match:
@@ -336,8 +367,8 @@ def showEpisodes():
 
     if not sSeason:
         sSeason = '1'
-    # Filmliste der Serie (Staffel 0): heute /serie/<name>/0, frueher .../filme
-    isMovieList = sUrl.endswith('filme') or sSeason == '0'
+    # Filmliste der Serie: die Seite fuehrt sie als Staffel 0 (/serie/<name>/0)
+    isMovieList = sSeason == '0'
     oRequest = cRequestHandler(sUrl)
     sHtmlContent = oRequest.request()
     pattern = r'<tr[^>]*>\s*<td><a href="([^"]+)" title="([^"]+)">(\d+)</a></td>\s*<td>.*?<a href="([^"]+)" title="([^"]+)">.*?</td>\s*<td>(.*?)</td>\s*</tr>'
@@ -351,11 +382,14 @@ def showEpisodes():
     isDesc, sDesc = cParser.parseSingleResult(sHtmlContent, r'<div id="sp_left">.*?<p>(.*?)</p>')
     total = len(sEpisodes)
     for eLink, eTitle, sNumber, eLink2, eTitle2, eHosterContent in sEpisodes:
-        # Die Seite fuehrt manche Titel mit fuehrendem '| ' (leerer deutscher Titel, z.B.
-        # '| OVA 01 | Momoiro Genmutan | Pink Phantasm') und mit Leerzeichen am Ende — beides
-        # landete bisher im Label und im originaltitle (Trailer, TMDB-Info, Weitere Quellen).
-        eTitle = eTitle.strip().lstrip('|').strip()
-        sName = sNumber + ' - ' + eTitle
+        # Die Seite fuehrt manche Titel mit '|' am Anfang oder Ende (leerer Teil, z.B.
+        # '| OVA 01 | Momoiro Genmutan | Pink Phantasm', '| OVA 01 |') und mit Leerzeichen am Ende —
+        # beides landete sonst im Label und im originaltitle (Trailer, TMDB-Info, Weitere Quellen).
+        eTitle = eTitle.strip().strip('|').strip()
+        if isMovieList:
+            sName = sNumber + ' - ' + eTitle   # Filmliste (Staffel 0): Label wie bisher, die Filme sind Specials
+        else:
+            sName = cParser.episodeLabel(sSeason, sNumber, eTitle)   # eine Form auf allen Sites ("S01E05 - Titel")
         oGuiElement = cGuiElement(sName, SITE_IDENTIFIER, 'showHosters')
         oGuiElement.setMediaType('episode' if not isMovieList else 'movie')
         if isMovieList and eTitle:
@@ -485,7 +519,6 @@ def getHosterUrl(hUrl):
 
     Request = cRequestHandler(URL_MAIN + '/' + hUrl[0], caching=False)
     Request.addHeaderEntry('Referer', ParameterHandler().getValue('entryUrl'))
-    Request.addHeaderEntry('Upgrade-Insecure-Requests', '1')
     htmlContent = Request.request()
     sitekey = extract_recaptcha_sitekey(htmlContent)
     if not sitekey:
@@ -501,8 +534,8 @@ def getHosterUrl(hUrl):
     infoDialog(cConfig().getLocalizedString(30825), icon='INFO', time=10000)
     google_captcha_token = solve_recaptcha(sitekey, sUrl)
     if not google_captcha_token:
+        # Gemeldet hat schon solve_recaptcha (Grund bzw. „Captcha nicht geloest")
         logger.error('BurningSeries: getHosterUrl: Failed to solve captcha.')
-        infoDialog(cConfig().getLocalizedString(30826), icon='ERROR', time=10000)
         return [{'streamUrl': '', 'resolved': False}]
 
     lIDMatch, lID = cParser.parseSingleResult(htmlContent, r'data-lid="([^"]+)"')
@@ -533,7 +566,6 @@ def getHosterUrl(hUrl):
 
     headers = {
         'accept': 'application/json, text/javascript, */*; q=0.01',
-        'accept-language': 'de-DE,de;q=0.9',
         'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
         'origin': URL_MAIN,
         'referer': sUrl,

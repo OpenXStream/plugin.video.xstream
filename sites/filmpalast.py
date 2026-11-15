@@ -2,7 +2,7 @@
 # Python 3
 
 # Always pay attention to the translations in the menu!
-# Keine Sprachlogik (seit 2026.09.10): die Seite ist deutsch, englische Fassungen
+# Keine Sprachlogik (seit dem 10.09.2026): die Seite ist deutsch, englische Fassungen
 # fuehrt sie als Genre „Englisch" — das steht in unserer dynamischen Genre-Liste
 # (Filme > Genre) und traegt die (EN)-Kennung ueber die Adresse.
 
@@ -42,14 +42,14 @@ def load():
     xbmcgui.Window(10000).clearProperty('xstream.filmpalast.lastSearchText')
     params = ParameterHandler()
     params.setParam('sUrl', URL_MAIN)
-    cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30500), SITE_IDENTIFIER, 'showEntries'), params)  # Neu
+    cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30500), SITE_IDENTIFIER, 'showEntries'), params)  # Neu auf der Seite
     cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30502), SITE_IDENTIFIER, 'showMoviesMenu'))   # Filme (Submenü)
     cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30511), SITE_IDENTIFIER, 'showSeriesMenu'))   # Serien (Submenü)
     cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30520), SITE_IDENTIFIER, 'showSearch'), params)   # Search
     cGui().setEndOfDirectory()
 
 
-def showMoviesMenu(): # Submenü Filme: Alle / Blockbuster / IMDB / Genre / A-Z
+def showMoviesMenu(): # Submenü Filme: Alle Filme / Top Filme / IMDB-Bewertung / Genre / A-Z
     params = ParameterHandler()
     params.setParam('sUrl', URL_MOVIES % 'new')
     cGui().addFolder(cGuiElement(cConfig().getLocalizedString(30542), SITE_IDENTIFIER, 'showEntries'), params)    # All Movies / Alle Filme
@@ -76,12 +76,13 @@ def showSeriesMenu(): # Submenü Serien: Alle / A-Z
 
 def _requestUrl(sUrl):
     # Kodiert unmittelbar vor dem Abruf (movie2k-Muster). Die Seite schreibt
-    # Genre-Links roh mit Umlaut ins Markup ('/search/genre/Komödie') und auch
-    # die Folgeseiten der Suche tragen den Suchbegriff roh — ohne Kodierung
-    # bricht urllib mit UnicodeEncodeError ab. Kodiert wird NIE im Parameter
-    # (der Parameterweg dekodiert per unquote_plus wieder), sondern nur hier.
-    # '%' bleibt in der safe-Liste, damit bereits kodierte Adressen nicht ein
-    # zweites Mal kodiert werden; Leerzeichen werden zu %20.
+    # Genre-Links roh mit Umlaut ins Markup ('/search/genre/Komödie') — ohne
+    # Kodierung bricht urllib mit UnicodeEncodeError ab. Kodiert wird NIE im
+    # Parameter (Regel: roh im Parameter, kodiert nur am Abruf; bis zum 02.11.2026
+    # dekodierte der Parameterweg per unquote_plus ohnehin wieder), sondern nur
+    # hier. '%' bleibt in der safe-Liste, damit bereits kodierte Adressen (die
+    # Suchadresse aus _searchUrl) nicht ein zweites Mal kodiert werden;
+    # Leerzeichen werden zu %20.
     return cParser.urlEncode(sUrl, safe=':/?&=%#+')
 
 
@@ -133,154 +134,66 @@ def _getNextPageUrl(sHtmlContent):
     return False
 
 
-# Pause vor jedem Nachholversuch: gibt einem Rate-Limit Luft. Laenger kostet
-# nur im Fehlerfall — im Normalfall laeuft keine einzige Pause.
-RETRY_PAUSE = 0.6
+def _searchUrl(sSearchText, iPage=1):
+    """Adresse einer Suchseite. Seite 1 ist die Suchadresse, die Folgeseiten
+    haengen die Seitenzahl als Pfadstueck an — die Form des Vorwaerts-Links der
+    Seite (`/search/title/<begriff>/2`, Mitschnitt 21.10.2026). Ob es eine
+    Folgeseite gibt, entscheidet allein dieser Link (_getNextPageUrl): auf der
+    letzten Seite fehlt er, und jenseits des Endes wiederholt die Seite nur den
+    Inhalt der letzten Seite (gemessen an 5 von 5 Begriffen).
 
-
-def _fetchSearchPage(sUrl, bFrisch=False):
-    """Eine Trefferseite holen. Liefert (Treffer, hat-Vorwaerts-Link, erreicht).
-
-    Das zweite Feld ist der Abbruch und NICHT verzichtbar: jenseits der letzten
-    Seite liefert filmpalast keine leere Liste, sondern WIEDERHOLT den Inhalt.
-    Wer nur auf „leer" prueft, laeuft bis zum Sicherheitslimit weiter und sammelt
-    die Wiederholungen ein — gemessen 211 statt 109 Treffern bei „könig". Der
-    Vorwaerts-Link fehlt dagegen auf der letzten Seite, genau daran hat sich
-    schon die frueher sequenzielle Schleife orientiert.
-
-    Fehler werden hier nicht gemeldet, aber seit 31.08. UNTERSCHEIDBAR
-    zurueckgegeben (drittes Feld): die Funktion holt ausschliesslich
-    Folgeseiten, und ein 404 am Listenende ist dort der Normalfall — der
-    Sammler entscheidet per Nachfassversuch, ob ein Fehlschlag ein Aussetzer
-    oder das Ende ist (Begruendung in _fetchAllSearchPages).
+    quote statt quotePlus, damit Leerzeichen als %20 uebergeben werden. Gebaut
+    wird IMMER aus dem rohen Suchbegriff, nie aus dem Link selbst: der
+    Weiter-Eintrag traegt nur Begriff und Seitenzahl (Regel:
+    roh im Parameter, kodiert nur am Abruf; bis zum 02.11.2026 loeste der
+    Parameterweg eine Kodierung ohnehin wieder auf, unquote_plus).
     """
-    # bFrisch=True zwingt am HTML-Cache vorbei: Nachhol- und Bestaetigungs-
-    # abrufe muessen den SERVER fragen — der Cache liefert sonst exakt die
-    # Antwort zurueck, die gerade geheilt oder bestaetigt werden soll
-    # (Drosselseiten mit Status 200 werden wie normale Antworten gecacht).
-    oRequest = cRequestHandler(_requestUrl(sUrl), ignoreErrors=True, caching=not bFrisch)
-    sHtmlContent = oRequest.request()
-    if not sHtmlContent or sHtmlContent in REQUEST_ERRORS:
-        return [], False, False
-    isMatch, aResult = _parsePage(sHtmlContent)
-    if not isMatch:
-        return [], False, True
-    return aResult, bool(_getNextPageUrl(sHtmlContent)), True
-
-
-def _fetchAllSearchPages(startUrl, sGui=False):
-    """Holt ALLE Seiten einer Suche und gibt kombinierte Ergebnisse zurück.
-
-    Die Folgeseiten werden in Gruppen PARALLEL geholt. Nacheinander summierte
-    sich die Ladezeit der Seite auf: gemessen 11,8 s fuer „walking dead" (sechs
-    Seiten), also ueber der Grenze, ab der sich eine Liste haengend anfuehlt.
-    Dasselbe Muster wie das Meta-Nachladen in xstream.py.
-
-    Warum in Gruppen und nicht alles auf einmal: wie viele Seiten es gibt,
-    verraet die Seite NICHT — Seite 1 fuehrt nur einen Vorwaerts-Link, keine
-    Gesamtzahl. Wer spekulativ alle Seiten bis zum Sicherheitslimit holt,
-    feuert bei den meisten Suchbegriffen (eine bis zwei Seiten) fast alle
-    Abrufe ins Leere. Die Gruppe begrenzt das auf hoechstens drei.
-
-    Fehlertoleranz seit 31.08. (Anlass: unter Parallellast fielen bei den
-    Schwester-Sites zufaellig ganze Seiten still aus): je Seite hoechstens
-    zwei Versuche — ein Fehlschlag wird einmal mit Pause nachgefasst, eine
-    erreichte leere Seite einmal bestaetigt. Bleibt eine Seite danach tot
-    oder leer, gilt das wie bisher als Listenende; Luecken mitten in der
-    Liste kann es so nicht geben.
-    """
-    allResults = []
-    maxPages = 5 if sGui else 10  # Sicherheitslimit
-    iBatch = 4      # Folgeseiten je Gruppe
-
-    # Seite 1 einzeln: nur hier ist ein Fehler eine echte Nachricht. Ab der
-    # ZWEITEN Seite werden Fehler geschluckt, weil die Blaetter-Leiste der Seite
-    # bei manchen Suchbegriffen mehr Seiten verspricht als es gibt („walking
-    # dead": sechs Seiten mit Inhalt, die Leiste bietet trotzdem eine siebte an),
-    # und die antwortet mit 404. Weil die Seite hinter Cloudflare liegt, steht in
-    # JEDER Antwort `server: cloudflare` — frueher hielt der requestHandler den
-    # 404 deshalb fuer eine Sperre und warf die Warnung 30829, obwohl die Suche
-    # laengst alle Treffer hatte.
-    oRequest = cRequestHandler(_requestUrl(startUrl), ignoreErrors=(sGui is not False))
-    sHtmlContent = oRequest.request()
-    if not sHtmlContent:
-        return allResults
-    isMatch, aResult = _parsePage(sHtmlContent)
-    if not isMatch:
-        return allResults
-    allResults.extend(aResult)
-
-    nextUrl = _getNextPageUrl(sHtmlContent)
-    if not nextUrl:
-        return allResults
-
-    # Das Adressmuster kommt aus dem Vorwaerts-Link der SEITE, nicht aus dem
-    # Code: er endet auf der Nummer der naechsten Seite. Ersetzt wird nur die
-    # Zahl, alles davor bleibt so, wie die Seite es liefert. Passt die Form
-    # nicht, bleibt es bei Seite 1 statt eine Adresse zu raten.
-    oMatch = re.search(r'^(.*/)(\d+)$', nextUrl)
-    if not oMatch:
-        return allResults
-    sBase, iPage = oMatch.group(1), int(oMatch.group(2))
-
-    while iPage <= maxPages:
-        aUrls = [sBase + str(p) for p in range(iPage, min(iPage + iBatch, maxPages + 1))]
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(aUrls)) as oPool:
-            aPages = list(oPool.map(_fetchSearchPage, aUrls))
-        bEnde = False
-        for sUrl, (aSeite, bHasNext, bErreicht) in zip(aUrls, aPages):
-            # Reihenfolge zaehlt: ab dem ersten bestaetigten Ende wird alles
-            # Nachfolgende verworfen. Sonst landen entweder Luecken oder die
-            # Wiederholungen jenseits des Endes in der Liste.
-            if not bErreicht:
-                # Gescheitert: einmal mit Pause nachfassen. Ein Aussetzer auf
-                # der Leitung heilt so; der 404 hinter der Blaetter-Leiste (die
-                # Seite verspricht manchmal eine Seite mehr als existiert)
-                # bleibt tot und ist dann wie vor dem Umbau das Listenende.
-                time.sleep(RETRY_PAUSE)
-                aSeite, bHasNext, bErreicht = _fetchSearchPage(sUrl, bFrisch=True)
-                if not bErreicht:
-                    bEnde = True
-                    break
-                if aSeite:
-                    logger.info('searchRetry %s: Seite %s nachgeholt, %d Treffer' % (SITE_NAME, sUrl.rsplit('/', 1)[-1], len(aSeite)))
-            if not aSeite:
-                # Erreicht, aber leer: einmal bestaetigen — ein 200er-Hickser
-                # saehe sonst exakt wie das Ende aus und schnitte den Rest ab.
-                time.sleep(RETRY_PAUSE)
-                aSeite2, bHasNext2, bErreicht2 = _fetchSearchPage(sUrl, bFrisch=True)
-                if not bErreicht2 or not aSeite2:
-                    bEnde = True
-                    break
-                logger.info('searchRetry %s: Seite %s nachgeholt, %d Treffer' % (SITE_NAME, sUrl.rsplit('/', 1)[-1], len(aSeite2)))
-                aSeite, bHasNext = aSeite2, bHasNext2
-            allResults.extend(aSeite)
-            if not bHasNext:
-                bEnde = True
-                break
-        if bEnde:
-            break
-        iPage += iBatch
-
-    return allResults
+    sUrl = URL_SEARCH % cParser.quote(sSearchText)
+    if iPage > 1:
+        sUrl += '/%d' % iPage
+    return sUrl
 
 
 def showEntries(entryUrl=False, sGui=False, sSearchText=False):
     oGui = sGui if sGui else cGui()
     params = ParameterHandler()
-    if not entryUrl: entryUrl = params.getValue('sUrl')
+    if not sSearchText:
+        # Weiter-Seite der Suche: Kodi ruft die Funktion neu auf, Begriff und
+        # Seitenzahl stehen dann nur noch im Parameter. Ohne den Begriff liefe die
+        # Folgeseite ungefiltert.
+        sSearchText = params.getValue('sSearchText') or False
+    iPage = 1
+    nextUrl = False
+    if sSearchText:
+        iPage = int(params.getValue('page') or 1)
+    elif not entryUrl:
+        entryUrl = params.getValue('sUrl')
     isTvshow = False
 
-    # Bei Suche: ALLE Seiten auf einmal holen
-    if sSearchText:
-        aResult = _fetchAllSearchPages(entryUrl, sGui)
-        isMatch = len(aResult) > 0
-        sHtmlContent = None  # Nicht mehr nötig für Pagination
-    else:
-        oRequest = cRequestHandler(_requestUrl(entryUrl), ignoreErrors=(sGui is not False))
+    while True:
+        if sSearchText:
+            entryUrl = _searchUrl(sSearchText, iPage)
+        # Eine Folgeseite der Suche meldet Fehler nicht als Fenster: dort gilt wie
+        # beim Blaettern „Kein Eintrag gefunden" (Seite 1 meldet wie bisher).
+        oRequest = cRequestHandler(_requestUrl(entryUrl), ignoreErrors=(sGui is not False or iPage > 1))
         sHtmlContent = oRequest.request()
         isMatch, aResult = _parsePage(sHtmlContent)
-
+        if not isMatch:
+            break
+        nextUrl = _getNextPageUrl(sHtmlContent)
+        if not sSearchText:
+            break
+        # Titelfilter wie an allen Filterstellen (cParser.searchTitle, mit
+        # Umlaut-Umschrift); der eigene Vergleich bis 14.10.2026 (Sonderzeichen raus,
+        # Teilstring) lieferte bei koenig/könig/star wars dieselben Treffer
+        aResult = [row for row in aResult if cParser.searchTitle(sSearchText, row[1])]
+        if aResult or sGui or not nextUrl:
+            break
+        # Seite nach dem Titelfilter leer, aber der Vorwaerts-Link fuehrt weiter:
+        # gleich weiterblaettern statt dem Nutzer leere Seiten zu zeigen (gefunden
+        # 21.10.2026 an hdfilme „der pate"). Nur in der Einzelsuche — die globale
+        # Suche bleibt bei Seite 1.
+        iPage += 1
     if not isMatch:
         if not sGui: oGui.showInfo()
         return
@@ -288,31 +201,25 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False):
     total = len(aResult)
     iShown = 0
     seen_tv_shows = set()
-    
-    # Alphabetisch nur bei der Suche: dort liegen alle Ergebnisseiten zusammen vor, A-Z macht
-    # die Liste findbar. Kategorien kommen seitenweise und behalten die Reihenfolge der Seite
-    # (neueste zuerst) - je Seite zu sortieren wuerde nur diese Information zerstoeren.
-    if sSearchText:
-        aResult = sorted(aResult, key=lambda x: x[1].lower())
-    
+
+    # KEINE Sortierung — auch nicht in der Suche: jede Liste kommt seitenweise und
+    # behaelt die Reihenfolge der Seite (neueste zuerst). Je Seite A-Z zu sortieren
+    # saehe wie eine vollstaendige Liste aus und zerstoerte nur diese Information
+    # (Regel: Sortieren und Blaettern schliessen sich aus).
     for sUrl, sName, sThumbnail, sDummy in aResult:
         isTvshow, _ = cParser.parse(sName, r'S\d\dE\d\d')
-        
-        # Lockerer Suchfilter (ignoriert Sonderzeichen/Case)
-        if sSearchText:
-            search_clean = re.sub(r'\W+', '', sSearchText).lower()
-            name_clean = re.sub(r'\W+', '', sName).lower()
-            if search_clean not in name_clean:
-                continue
 
-        # Dedupe fuer Serien: je Serie nur der erste Folgen-Eintrag
+        # Dedupe fuer Serien: je Serie nur der erste Folgen-Eintrag. Verglichen wird
+        # ohne Gross-/Kleinschreibung — die Seite schreibt dieselbe Serie in beiden
+        # Formen ("Fear the Walking Dead" und "Fear The Walking Dead", 21.10.2026),
+        # angezeigt wird der Name des ersten Eintrags.
         if isTvshow:
             cleanNameMatch = re.search(r'(.*?)\s*S\d+E\d+', sName, re.IGNORECASE)
             if cleanNameMatch:
                 cleanName = cleanNameMatch.group(1).strip()
-                if cleanName in seen_tv_shows:
+                if cleanName.lower() in seen_tv_shows:
                     continue
-                seen_tv_shows.add(cleanName)
+                seen_tv_shows.add(cleanName.lower())
                 sName = cleanName
 
         if sThumbnail.startswith('/'):
@@ -336,32 +243,35 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False):
         
         params.setParam('sName', sName)
         params.setParam('sThumbnail', sThumbnail)
-        if isYear: params.setParam('sYear', sYear)  # Aki: Year an showSeasons weitergeben
+        if isYear: params.setParam('sYear', sYear)  # Year an showSeasons weitergeben
         oGui.addFolder(oGuiElement, params, isTvshow, total)
         iShown += 1
 
-    # Kamen Treffer an, wurden aber ALLE vom Titelfilter verworfen, stand hier
-    # ein leeres Verzeichnis ohne Hinweis (belegt mit "koenig", Audit 01.09.2026).
-    # BEWUSST VOR dem Pagination-Block: dessen Bedingung schliesst die Suche aus,
-    # die Meldung wuerde dort nie erreicht. Gleiches Muster wie in hdfilme.
-    if not sGui and not iShown:
-        oGui.showInfo()
-
-    # --- PAGINATION nur für Kategorien (nicht für Suche, da schon alle Seiten geholt) ---
-    if not sGui and not sSearchText and sHtmlContent:
-        nextUrl = _getNextPageUrl(sHtmlContent)
+    if sGui:
+        return
+    # Weiter-Eintrag mit FRISCHEM ParameterHandler: der oben in der Schleife benutzte
+    # traegt noch entryUrl, sName und sThumbnail des LETZTEN Listeneintrags mit sich.
+    # Die Folgeseite braucht davon nichts, und geerbte Werte sind eine Falle, sobald
+    # showEntries irgendwann mehr als sUrl liest.
+    if sSearchText:
+        # Suche: eine Seite je Aufruf, die Folgeseite ueber den Weiter-Eintrag mit
+        # Begriff und Seitenzahl (Bauform wie bei den anderen Seiten); ohne Gesamtzahl,
+        # die Seite nennt keine. Leere Seiten wurden oben uebersprungen; ohne Treffer
+        # und ohne Folgeseite kommt die Meldung „Kein Eintrag gefunden" (belegt mit
+        # "koenig", 01.09.2026).
+        if not iShown:
+            oGui.showInfo()
         if nextUrl:
-            # FRISCHER ParameterHandler: der oben in der Schleife benutzte traegt noch
-            # entryUrl, sName und sThumbnail des LETZTEN Listeneintrags mit sich. Die
-            # Folgeseite braucht davon nichts, und geerbte Werte sind eine Falle, sobald
-            # showEntries irgendwann mehr als sUrl liest.
             nextParams = ParameterHandler()
-            nextParams.setParam('sUrl', nextUrl)
+            nextParams.setParam('sSearchText', sSearchText)
+            nextParams.setParam('page', iPage + 1)
             oGui.addNextPage(SITE_IDENTIFIER, 'showEntries', nextParams)
-    if not sGui:
-        oGui.setView('tvshows' if isTvshow else 'movies')
-        if not sSearchText:
-            oGui.setEndOfDirectory()
+    elif nextUrl:
+        nextParams = ParameterHandler()
+        nextParams.setParam('sUrl', nextUrl)
+        oGui.addNextPage(SITE_IDENTIFIER, 'showEntries', nextParams)
+    oGui.setView('tvshows' if isTvshow else 'movies')
+    oGui.setEndOfDirectory()
 
 def showSeasons():
     params = ParameterHandler()
@@ -369,7 +279,7 @@ def showSeasons():
     sThumbnail = params.getValue("sThumbnail")
     sName = params.getValue('sName')
     sTmdbID = params.getValue('tmdbID') or ''
-    sYear = params.getValue('sYear') or ''  # Aki: Year aus Listen-Ebene uebernehmen
+    sYear = params.getValue('sYear') or ''  # Year aus Listen-Ebene uebernehmen
     oRequest = cRequestHandler(_requestUrl(sUrl))
     sHtmlContent = oRequest.request()
     pattern = r'<a[^>]*class="staffTab"[^>]*data-sid="(\d+)"[^>]*>'
@@ -391,7 +301,7 @@ def showSeasons():
         if sTmdbID:
             oGuiElement.addItemValue('tmdb_id', sTmdbID)
         if sYear:
-            oGuiElement.addItemValue('year', sYear)  # Aki: Year auf Staffel setzen
+            oGuiElement.addItemValue('year', sYear)  # Year auf Staffel setzen
         oGuiElement.setThumbnail(sThumbnail)
         if isDesc:
             oGuiElement.setDescription(sDesc)
@@ -431,7 +341,9 @@ def showEpisodes():
     isDesc, sDesc = cParser.parseSingleResult(sHtmlContent, '"description">([^<]+)')
     total = len(aResult)
     for sUrl, sName in aResult:
-        oGuiElement = cGuiElement(cConfig().getLocalizedString(30513) + ' ' + str(sName), SITE_IDENTIFIER, 'showHosters')
+        # Eine Form auf allen Sites ("S01E01", cParser.episodeLabel); die Adresse fuehrt die Folge
+        # zweistellig (s01e01) — nur das Label, setEpisode bekommt den Wert unveraendert
+        oGuiElement = cGuiElement(cParser.episodeLabel(sSeason, sName), SITE_IDENTIFIER, 'showHosters')
         oGuiElement.setThumbnail(sThumbnail)
         oGuiElement.setTVShowTitle(sShowName)
         oGuiElement.setSeason(sSeason)
@@ -525,10 +437,10 @@ def showSearch():
         sSearchText = cGui().showKeyBoard(sHeading=cConfig().getLocalizedString(30281))
         if not sSearchText: return
         win.setProperty('xstream.filmpalast.lastSearchText', sSearchText)
+    # Das Verzeichnis schliesst showEntries selbst ab — so wie bei jeder
+    # Weiter-Seite der Suche, die Kodi direkt dort aufruft.
     _search(False, sSearchText)
-    cGui().setEndOfDirectory()
 
 
 def _search(oGui, sSearchText):
-    # Quote nutzen statt quotePlus, damit Leerzeichen als %20 übergeben werden
-    showEntries(URL_SEARCH % cParser.quote(sSearchText), oGui, sSearchText)
+    showEntries(False, oGui, sSearchText)

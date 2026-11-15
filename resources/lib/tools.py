@@ -6,7 +6,7 @@ import xbmcgui
 import hashlib
 import re
 import os
-import pyaes
+import threading
 
 from xbmcvfs import translatePath
 from resources.lib.config import cConfig
@@ -46,55 +46,6 @@ def platform():
         return 'OSMC'
 
 
-# zeigt nach Update den Changelog als Popup an
-def changelog():
-    CHANGELOG_PATH = translatePath(os.path.join('special://home/addons/' + cConfig().getAddonInfo('id') + '/', 'changelog.txt'))
-    version = cConfig().getAddonInfo('version')
-    if cConfig().getSetting('changelog_version') == version:
-        return
-    # If changelog.txt doesn't exist, just skip silently
-    if not os.path.isfile(CHANGELOG_PATH):
-        cConfig().setSetting('changelog_version', version)
-        return
-    cConfig().setSetting('changelog_version', version)
-    with open(CHANGELOG_PATH, mode='r', encoding='utf-8') as f:
-        announce = f.read()
-    # If changelog.txt is empty, show a notification instead of a textbox
-    if not announce.strip():
-        infoDialog(cConfig().getLocalizedString(30821), icon='INFO')
-        return
-    heading = cConfig().getLocalizedString(30275)
-    textBox(heading, announce)
-
-
-# Erstellt eine Textbox
-def textBox(heading, announce):
-    class TextBox():
-
-        def __init__(self, *args, **kwargs):
-            self.WINDOW = 10147
-            self.CONTROL_LABEL = 1
-            self.CONTROL_TEXTBOX = 5
-            xbmc.executebuiltin("ActivateWindow(%d)" % (self.WINDOW, ))
-            self.win = xbmcgui.Window(self.WINDOW)
-            xbmc.sleep(500)
-            self.setControls()
-
-        def setControls(self):
-            self.win.getControl(self.CONTROL_LABEL).setLabel(heading)
-            try:
-                f = open(announce)
-                text = f.read()
-            except:
-                text = announce
-            self.win.getControl(self.CONTROL_TEXTBOX).setText(str(text))
-            return
-
-    TextBox()
-    while xbmc.getCondVisibility('Window.IsVisible(10147)'):
-        xbmc.sleep(500)
-
-
 # Info Meldung im Kodi
 def infoDialog(message, heading=cConfig().getAddonInfo('name'), icon='', time=5000, sound=False):
     if icon == '': icon = cConfig().getAddonInfo('icon')
@@ -102,6 +53,23 @@ def infoDialog(message, heading=cConfig().getAddonInfo('name'), icon='', time=50
     elif icon == 'WARNING': icon = xbmcgui.NOTIFICATION_WARNING
     elif icon == 'ERROR': icon = xbmcgui.NOTIFICATION_ERROR
     xbmcgui.Dialog().notification(heading, message, icon, time, sound=sound)
+
+
+# Lehnt ein Dienst den EIGENEN Schluessel ab (TMDB, 2Captcha), meldet das bei beiden dieselbe
+# Einblendung: Ueberschrift der Dienst, Text der Grund, dieselben Strings (so entschieden am 01.11.2026).
+# Hoechstens einmal je Dienst und Grund in einem Plugin-Aufruf — jeder Aufruf ist ein frischer
+# Interpreter, die Menge lebt also einen Klick. Ohne die Grenze kaeme bei einer Liste mit TMDB
+# Infos je Abfrage eine Einblendung; der Lock, weil der TMDB-Vorlauf bis zu 10 Threads hat.
+_keyRejectedShown = set()
+_keyRejectedLock = threading.Lock()
+
+
+def keyRejected(sService, iReason):
+    with _keyRejectedLock:
+        if (sService, iReason) in _keyRejectedShown:
+            return
+        _keyRejectedShown.add((sService, iReason))
+    infoDialog(cConfig().getLocalizedString(iReason), heading=sService, icon='ERROR', time=10000)
 
 
 class cParser:
@@ -171,10 +139,6 @@ class cParser:
         return False, None
 
     @staticmethod
-    def replace(pattern, sReplaceString, sValue):
-        return cParser._get_compiled_pattern(pattern).sub(sReplaceString, sValue)
-
-    @staticmethod
     def search(pattern, sValue, ignoreCase=True):
         flags = 0
         if ignoreCase:
@@ -195,8 +159,8 @@ class cParser:
         Umlaute und ß werden umgeschrieben (König -> koenig, Straße -> strasse):
         die Seiten schreiben beides, der Nutzer tippt beides, und beide Seiten
         des Vergleichs bekommen dieselbe Form. Bis zum 11.09.2026 blieben sie
-        stehen — „koenig" fand bei sechs Seiten 0 statt 10 bis 27 Titel mit
-        „König", obwohl die Seiten sie lieferten. Das Ergebnis dient NUR dem
+        stehen — „koenig" fand bei sechs Seiten 0 Titel, obwohl die Seiten welche
+        mit „König" lieferten (nach der Umschrift 2 bis 20 je Seite). Das Ergebnis dient NUR dem
         Vergleich, angezeigt wird der Originaltitel. Bis zum 02.09.2026 stand
         diese Angleichung nur in xstream.searchAlter; die Site-Suchen verglichen
         zeichengenau, und „spider man" lieferte bei sechs Seiten 0 Treffer, obwohl
@@ -275,7 +239,7 @@ class cParser:
         if sNew == sBody:
             return sTitle
         # Besteht der Titel NUR aus einer Zusatz-Form, ist sie der Titel: „[REC] (2007)" (kellerkino)
-        # traf die Kuerzel-Klammer und kam als leerer Suchtitel zurueck (Audit 02.10.2026)
+        # traf die Kuerzel-Klammer und kam als leerer Suchtitel zurueck (02.10.2026)
         if not sNew.strip():
             return sTitle
         # ein durch den Schnitt verwaister Doppelpunkt faellt mit („Digimon Adventure: Ger Sub")
@@ -318,6 +282,46 @@ class cParser:
             sNew = sCut.strip().rstrip('-–—:').strip()
         return sNew if sNew != sTitle else sTitle
 
+    # Platzhalter-Titel der Seiten mit der Nummer der Folge: „Folge 5", „Episode 5", hdfilmes „Episoden 5"
+    _RE_EPISODE_PLACEHOLDER = re.compile(r'^(?:folge|episoden?)\s*0*(\d+)$', re.I)
+
+    @staticmethod
+    def episodeLabel(season, episode, title='', fallback=None, altTitle=''):
+        """Label eines Folgen-Eintrags — EINE Form auf allen Sites (seit dem 06.10.2026): „S01E05 - Titel",
+        ohne Titel „S01E05". S/E ist Format wie „(3/12)" in cGui.pageInfo und braucht keinen String.
+
+        Ein Platzhalter-Titel mit derselben Nummer („Folge 5" bei Folge 5) faellt weg, sonst stuende
+        die Nummer doppelt da; „Episode 27" bei S02E05 bleibt (Gesamtzaehlung der Seite). Fuehrt die
+        Seite einen zweiten Titel (deutsch und englisch bei aniworld und serienstream),
+        kommt er als `altTitle` mit und springt ein, wenn der erste leer oder so ein Platzhalter ist —
+        „Folge 03" neben „Zaht and Braham" ergab bis zum 05.11.2026 „S03E03" ohne Titel.
+        Staffel 0 wird S00 (Specials). Ohne ganze Zahlen fuer Staffel und Folge wird nichts geraten:
+        dann kommt `fallback` zurueck (die bisherige Form der Site, wo sie eine eigene hatte), sonst
+        „Folge N - Titel".
+        """
+        try:
+            iEpisode = int(str(episode).strip())
+        except ValueError:
+            iEpisode = None
+
+        def _echt(sWert):
+            # der Titel ohne den Platzhalter der eigenen Nummer
+            sWert = str(sWert or '').strip()
+            m = cParser._RE_EPISODE_PLACEHOLDER.match(sWert)
+            return '' if m and int(m.group(1)) == iEpisode else sWert
+        sTitle = _echt(title) or _echt(altTitle)
+        try:
+            iSeason = int(str(season).strip())
+        except ValueError:
+            iSeason = None
+        if iSeason is not None and iEpisode is not None and iSeason >= 0 and iEpisode >= 0:
+            sLabel = 'S%02dE%02d' % (iSeason, iEpisode)
+        elif fallback is not None:
+            return fallback
+        else:
+            sLabel = '%s %s' % (cConfig().getLocalizedString(30513), iEpisode if iEpisode is not None else str(episode).strip())
+        return '%s - %s' % (sLabel, sTitle) if sTitle else sLabel
+
     @staticmethod
     def searchTitle(sSearchText, sTitle):
         """Titelfilter der Suchen: steht der Suchbegriff im Titel, beide normalisiert?
@@ -356,17 +360,8 @@ class cParser:
         return quote(sUrl)
 
     @staticmethod
-    def unquotePlus(sUrl):
-        return unquote_plus(sUrl)
-
-    @staticmethod
     def quotePlus(sUrl):
         return quote_plus(sUrl)
-
-    @staticmethod
-    def B64decode(text):
-        import base64
-        return base64.b64decode(text).decode('utf-8')
 
 
 class cUtil:
@@ -409,34 +404,6 @@ class cUtil:
         if text is None: text = ''
         text = cUtil.removeHtmlTags(text)
         return text
-
-    @staticmethod
-    def evp_decode(cipher_text, passphrase, salt=None):
-        if not salt:
-            salt = cipher_text[8:16]
-            cipher_text = cipher_text[16:]
-        key, iv = cUtil.evpKDF(passphrase, salt)
-        decrypter = pyaes.Decrypter(pyaes.AESModeOfOperationCBC(key, iv))
-        plain_text = decrypter.feed(cipher_text)
-        plain_text += decrypter.feed()
-        return plain_text.decode("utf-8")
-
-    @staticmethod
-    def evpKDF(pwd, salt, key_size=32, iv_size=16):
-        temp = b''
-        fd = temp
-        while len(fd) < key_size + iv_size:
-            h = hashlib.md5()
-            h.update(temp + pwd + salt)
-            temp = h.digest()
-            fd += temp
-        key = fd[0:key_size]
-        iv = fd[key_size:key_size + iv_size]
-        return key, iv
-        
-    @staticmethod
-    def isSimilar(sSearch, sText, threshold=0.9):
-        return (SequenceMatcher(None, sSearch, sText).ratio() >= threshold)
 
     @staticmethod
     @lru_cache(maxsize=200000)

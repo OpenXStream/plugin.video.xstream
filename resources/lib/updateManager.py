@@ -16,7 +16,7 @@ from xbmcvfs import translatePath
 
 
 def resolverUpdate():
-    # Release Branch https://github.com/Gujal00/ResolveURL
+    # Master-Branch von https://github.com/Gujal00/ResolveURL (branch unten)
     username = 'Gujal00'
     resolve_dir = 'ResolveURL'
     resolve_id = 'script.module.resolveurl'
@@ -105,7 +105,9 @@ def doUpdate(LocalDir, REMOTE_PATH, Title, localFileName, auth, sessionUA):
                     _skipped += 1
                     continue  # Fremd-Addon (.xxx, smr_link_tester) oder Repo-Root -> ignorieren
                 dest = os.path.join(LocalDir, "/".join(parts[parts.index(Title) + 1:]))
-                if not os.path.abspath(dest).startswith(os.path.abspath(LocalDir)):
+                # Mit Trenner pruefen: ohne ihn galt auch ein Nachbarordner mit gleichem Namensanfang
+                # (script.module.resolveurl-x ueber '..') als innen — 02.11.2026 nachgestellt
+                if not os.path.abspath(dest).startswith(os.path.abspath(LocalDir) + os.sep):
                     _skipped += 1
                     continue  # skip entries that escape target directory
                 destdir = os.path.dirname(dest)
@@ -141,7 +143,6 @@ def _getXmlString(xml_url, auth, sessionUA):
 
 def manualResolverUpdate():
     try:
-        cConfig().setSetting('resolver.branch', 'release')
         # SHA löschen → erzwingt frischen Download
         sha_path = os.path.join(translatePath('special://userdata/addon_data/script.module.resolveurl'), 'update_sha')
         if os.path.exists(sha_path): os.remove(sha_path)

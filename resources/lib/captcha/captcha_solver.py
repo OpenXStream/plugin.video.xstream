@@ -15,10 +15,43 @@ from resources.lib.logger import logger
 from resources.lib.config import cConfig
 
 
+# Fehlercodes von in.php, mit denen 2Captcha den Schluessel oder das Konto ablehnt, je mit dem
+# Grund fuer die Einblendung (captcha_helper meldet ihn ueber tools.keyRejected, dieselben Strings
+# wie beim TMDB-Schluessel). Codes und Bedeutung aus dem offiziellen Client
+# 2captcha/2captcha-javascript (src/structs/2captchaError.ts, Master d3587e3 vom 20.10.2026,
+# gelesen 01.11.2026); die beiden Schluessel-Codes am 01.11.2026 gegen in.php gemessen.
+KEY_ERRORS = {
+    'ERROR_WRONG_USER_KEY': 30917,      # Schluessel hat nicht die Form: 32 Zeichen (gemessen: 10 und 33 Zeichen)
+    'ERROR_KEY_DOES_NOT_EXIST': 30917,  # Schluessel gibt es nicht (gemessen: ausgedachter Schluessel mit 32 Zeichen)
+    'ERROR_ZERO_BALANCE': 30918,        # kein Guthaben auf dem Konto
+    'IP_BANNED': 30919,                 # IP gesperrt nach vielen Anfragen mit falschem Schluessel (laut Client 5 Minuten)
+    'ERROR_IP_NOT_ALLOWED': 30920,      # IP fehlt in der IP-Liste, die im 2Captcha-Konto gepflegt wird
+}
+
+
+class CaptchaKeyError(Exception):
+    """in.php lehnt Schluessel oder Konto ab; die Nachricht ist der Fehlercode aus KEY_ERRORS."""
+
+
+def _raiseIfRejected(json_response):
+    """Antwort von in.php pruefen, bevor die Auftrags-ID benutzt wird.
+
+    Bei status 0 steht im Feld 'request' der Fehlercode (ERROR_KEY_DOES_NOT_EXIST,
+    ERROR_ZERO_BALANCE ...) — bis zum 10.09.2026 lief der als Auftrags-ID in den Abfrage-Loop
+    und res.php wurde einmal umsonst gefragt. Lehnt der Dienst Schluessel oder Konto ab, kommt
+    CaptchaKeyError: der Helfer nennt dann den Grund statt „Captcha nicht geloest".
+    """
+    if json_response.get('status') != 1:
+        sCode = json_response.get('request')
+        if sCode in KEY_ERRORS:
+            raise CaptchaKeyError(sCode)
+        raise Exception(f"Captcha-Dienst lehnt die Anfrage ab: {sCode}")
+
+
 class CaptchaSolver:
     """
     Eine wiederverwendbare Klasse zum Lösen verschiedener Captcha-Typen.
-    Unterstützt aktuell 2Captcha für reCAPTCHA v2.
+    Unterstützt aktuell 2Captcha für reCAPTCHA v2 und Cloudflare Turnstile.
     """
 
     def __init__(self, api_key=None, provider=None, timeout=120):
@@ -80,8 +113,12 @@ class CaptchaSolver:
             'json': 1,
         }
 
+        # ignoreErrors wie bei den Abfragen in _get_2captcha_result: scheitert der Dienst selbst (5xx, Reset,
+        # Timeout), meldet captcha_helper._solved „Captcha nicht geloest" (30826). Bis zum 02.11.2026 kam
+        # ausserhalb des Hosterlink-Schritts (Gate eines Hosters, clear_gate) zusaetzlich das Fehlerfenster des
+        # requestHandlers — zwei Meldungen fuer einen Fehlschlag (lokal nachgestellt).
         captcha_request = cRequestHandler('https://2captcha.com/in.php', caching=False, method='POST',
-                                          data=json.dumps(params))
+                                          data=json.dumps(params), ignoreErrors=True)
         captcha_request.addHeaderEntry('Content-Type', 'application/json')
         response_text = captcha_request.request()
 
@@ -92,11 +129,7 @@ class CaptchaSolver:
 
         if 'request' not in json_response:
             raise Exception(f"Ungültige Antwort vom Captcha-Dienst: {json_response}")
-        # Bei status 0 steht im Feld 'request' der Fehlercode (ERROR_KEY_DOES_NOT_EXIST,
-        # ERROR_ZERO_BALANCE ...) — bis zur 2026.09.10 lief der als Auftrags-ID in den
-        # Abfrage-Loop und res.php wurde einmal umsonst gefragt
-        if json_response.get('status') != 1:
-            raise Exception(f"Captcha-Dienst lehnt die Anfrage ab: {json_response.get('request')}")
+        _raiseIfRejected(json_response)
 
         captcha_id = json_response['request']
         logger.info(f'Turnstile-Anfrage gesendet mit ID: {captcha_id}')
@@ -117,8 +150,9 @@ class CaptchaSolver:
             'json': 1,
         }
 
+        # ignoreErrors: ein Fehlschlag des Dienstes meldet _solved, siehe _solve_turnstile_with_2captcha
         captcha_request = cRequestHandler('https://2captcha.com/in.php', caching=False, method='POST',
-                                          data=json.dumps(params))
+                                          data=json.dumps(params), ignoreErrors=True)
         captcha_request.addHeaderEntry('Content-Type', 'application/json')
         response_text = captcha_request.request()
 
@@ -129,9 +163,7 @@ class CaptchaSolver:
 
         if 'request' not in json_response:
             raise Exception(f"Ungültige Antwort vom Captcha-Dienst: {json_response}")
-        # Gleiche Pruefung wie beim Turnstile: Fehlercode statt Auftrags-ID abfangen
-        if json_response.get('status') != 1:
-            raise Exception(f"Captcha-Dienst lehnt die Anfrage ab: {json_response.get('request')}")
+        _raiseIfRejected(json_response)
 
         captcha_id = json_response['request']
         logger.info(f'Captcha-Anfrage gesendet mit ID: {captcha_id}')

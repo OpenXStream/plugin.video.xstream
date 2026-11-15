@@ -77,7 +77,7 @@
 							<texturenofocus colordiffuse="D0FFFFFF">linefocus.png</texturenofocus>
 							<texturefocus colordiffuse="$INFO[Window.Property(color)]">linefocus.png</texturefocus>
 							<animation reversible="false" center="auto" easing="inout" effect="zoom" end="100" start="90" time="400" tween="back">Focus</animation>
-							<label>Close</label>
+							<label>$ADDON[plugin.video.xstream 30902]</label>
 							<onclick>Action(Close)</onclick>
 							<visible>!Player.HasMedia</visible>
 						</control>
@@ -208,22 +208,24 @@
 					<label>$INFO[Window.Property(Plot)]</label>
 					<autoscroll time="3000" delay="4000" repeat="5000">!Control.HasFocus(61)</autoscroll>
 				</control>
+				<!-- Bis zu 10 Zeilen zu 29 = 290 ab y 332: Ende 622, die Knoepfe beginnen bei 630. Mit 32 lag die zehnte Zeile
+				     (Premiere) auf den Knoepfen, und die Liste durfte bis 732 zeichnen (Screenshot vom 31.10.2026). -->
 				<control type="list">
 					<left>0</left>
 					<top>280</top>
 					<width>700</width>
-					<height>400</height>
+					<height>290</height>
 					<onleft>49</onleft>
 					<onright>49</onright>
 					<onup>9000</onup>
 					<ondown>61</ondown>
 					<pagecontrol>-</pagecontrol>
 					<orientation>vertical</orientation>
-					<itemlayout width="1200" height="32">
+					<itemlayout width="1200" height="29">
 						<control type="label">
 							<left>0</left>
 							<height>20</height>
-							<width>200</width>
+							<width>190</width>
 							<font>font10</font>
 							<align>left</align>
 							<aligny>center</aligny>
@@ -234,7 +236,7 @@
 						</control>
 						<control type="label">
 							<height>20</height>
-							<left>150</left>
+							<left>200</left>
 							<width>500</width>
 							<font>font10</font>
 							<align>left</align>
@@ -245,11 +247,11 @@
 							<scroll>false</scroll>
 						</control>
 					</itemlayout>
-					<focusedlayout width="1200" height="32">
+					<focusedlayout width="1200" height="29">
 						<control type="label">
 							<left>0</left>
 							<height>20</height>
-							<width>200</width>
+							<width>190</width>
 							<font>font10</font>
 							<align>left</align>
 							<aligny>center</aligny>
@@ -259,7 +261,7 @@
 						</control>
 						<control type="label">
 							<height>20</height>
-							<left>150</left>
+							<left>200</left>
 							<width>500</width>
 							<font>font10</font>
 							<align>left</align>
@@ -271,49 +273,64 @@
 					</focusedlayout>
 					<content>
 						<item>
-							<label>[B]Director[/B]</label>
+							<label>[B]$ADDON[plugin.video.xstream 30908][/B]</label>
 							<label2>$INFO[Window.Property(director)]</label2>
 							<onclick>noop</onclick>
+							<visible>!String.IsEmpty(Window.Property(director))</visible>
 						</item>
 						<item>
-							<label>[B]Writer[/B]</label>
+							<label>[B]$ADDON[plugin.video.xstream 30909][/B]</label>
 							<label2>$INFO[Window.Property(Writer)]</label2>
 							<onclick>noop</onclick>
+							<visible>!String.IsEmpty(Window.Property(Writer))</visible>
 						</item>
 						<item>
-							<label>[B]Genre[/B]</label>
+							<label>[B]$ADDON[plugin.video.xstream 30506][/B]</label>
 							<label2>$INFO[Window.Property(Genre)]</label2>
 							<onclick>noop</onclick>
+							<visible>!String.IsEmpty(Window.Property(Genre))</visible>
 						</item>
 						<item>
-							<label>[B]Studio[/B]</label>
+							<label>[B]$ADDON[plugin.video.xstream 30910][/B]</label>
 							<label2>$INFO[Window.Property(studio)]</label2>
 							<onclick>noop</onclick>
+							<visible>!String.IsEmpty(Window.Property(studio))</visible>
 						</item>
 						<item>
-							<label>[B]Original Title[/B]</label>
+							<label>[B]$ADDON[plugin.video.xstream 30911][/B]</label>
 							<label2>$INFO[Window.Property(originaltitle)]</label2>
 							<onclick>noop</onclick>
+							<visible>!String.IsEmpty(Window.Property(originaltitle))</visible>
 						</item>
 						<item>
-							<label>[B]Original Language[/B]</label>
+							<label>[B]$ADDON[plugin.video.xstream 30912][/B]</label>
 							<label2>$INFO[Window.Property(country)]</label2>
 							<onclick>noop</onclick>
+							<visible>!String.IsEmpty(Window.Property(country))</visible>
 						</item>
 						<item>
-							<label>[B]Tagline[/B]</label>
+							<label>[B]$ADDON[plugin.video.xstream 30913][/B]</label>
 							<label2>$INFO[Window.Property(tagline)]</label2>
 							<onclick>noop</onclick>
+							<visible>!String.IsEmpty(Window.Property(tagline))</visible>
 						</item>
 						<item>
-							<label>[B]Budget / Revenue[/B]</label>
-							<label2>$INFO[Window.Property(budget)] / $INFO[Window.Property(revenue)]</label2>
+							<label>[B]$ADDON[plugin.video.xstream 30914][/B]</label>
+							<label2>$INFO[Window.Property(budget)]</label2>
 							<onclick>noop</onclick>
+							<visible>!String.IsEmpty(Window.Property(budget))</visible>
 						</item>
 						<item>
-							<label>[B]Premiere[/B]</label>
+							<label>[B]$ADDON[plugin.video.xstream 30915][/B]</label>
+							<label2>$INFO[Window.Property(revenue)]</label2>
+							<onclick>noop</onclick>
+							<visible>!String.IsEmpty(Window.Property(revenue))</visible>
+						</item>
+						<item>
+							<label>[B]$ADDON[plugin.video.xstream 30916][/B]</label>
 							<label2>$INFO[Window.Property(releaseDate)]</label2>
 							<onclick>noop</onclick>
+							<visible>!String.IsEmpty(Window.Property(releaseDate))</visible>
 						</item>
 					</content>
 				</control>
@@ -358,7 +375,7 @@
 					<width>820</width>
 					<height>20</height>
 					<font>font12</font>
-					<label>Spielt in: $INFO[Container(5215).ListItem.Label]</label>
+					<label>$ADDON[plugin.video.xstream 30907]: $INFO[Container(5215).ListItem.Label]</label>
 					<align>left</align>
 					<aligny>center</aligny>
 					<textcolor>white</textcolor>
@@ -467,7 +484,7 @@
 					<width>820</width>
 					<height>20</height>
 					<font>font12</font>
-					<label>Casting: $INFO[Container(50).ListItem.Label] / $INFO[Container(50).ListItem.Label2]</label>
+					<label>$ADDON[plugin.video.xstream 30903]: $INFO[Container(50).ListItem.Label] / $INFO[Container(50).ListItem.Label2]</label>
 					<align>left</align>
 					<aligny>center</aligny>
 					<textcolor>white</textcolor>
@@ -478,7 +495,7 @@
 					<width>820</width>
 					<height>20</height>
 					<font>font12</font>
-					<label>Director: $INFO[Container(5200).ListItem.Label] / $INFO[Container(5200).ListItem.Label2]</label>
+					<label>$ADDON[plugin.video.xstream 30906]: $INFO[Container(5200).ListItem.Label] / $INFO[Container(5200).ListItem.Label2]</label>
 					<align>left</align>
 					<aligny>center</aligny>
 					<textcolor>white</textcolor>
@@ -679,7 +696,7 @@
 					<width>820</width>
 					<height>20</height>
 					<font>font12</font>
-					<label>Similar: $INFO[Container(5205).ListItem.Label]</label>
+					<label>$ADDON[plugin.video.xstream 30904]: $INFO[Container(5205).ListItem.Label]</label>
 					<align>left</align>
 					<aligny>center</aligny>
 					<textcolor>white</textcolor>
@@ -690,7 +707,7 @@
 					<width>820</width>
 					<height>20</height>
 					<font>font12</font>
-					<label>Recommend: $INFO[Container(5210).ListItem.Label]</label>
+					<label>$ADDON[plugin.video.xstream 30905]: $INFO[Container(5210).ListItem.Label]</label>
 					<align>left</align>
 					<aligny>center</aligny>
 					<textcolor>white</textcolor>
@@ -880,6 +897,11 @@
 					</focusedlayout>
 				</control>
 			</control>
+			<!-- Knoepfe: Fokus deckend Himmelblau 56B4E9 mit dunkler Schrift 0B1B26, sonst dunkel 1C232B (focus.png = 60 %) mit
+			     weisser Schrift. 56B4E9 aus der Okabe-Ito-Palette (Okabe und Ito 2008, bei Farbfehlsicht unterscheidbar); Kontrast
+			     nach WCAG gerechnet 01.11.2026: Schrift im Fokus 7,6:1, sonst 18:1, Fokus gegen sonst 7,8:1. Bis dahin lightblue
+			     60 % gegen weiss 49 %: beide gleich hell (1,0:1), der Fokus nur am Farbton erkennbar, Schrift 4,0:1. Die uebrigen
+			     Fokusrahmen (Schliessen, Poster) behalten Window.Property(color) — hell auf dunkel, gut sichtbar. -->
 			<control type="grouplist" id="9000">
 				<left>520</left>
 				<top>630</top>
@@ -902,11 +924,11 @@
 					<font>font12</font>
 					<height>40</height>
 					<width>auto</width>
-					<label>Info</label>
+					<label>$ADDON[plugin.video.xstream 30241]</label>
 					<textcolor>FFFFFFFF</textcolor>
-					<focusedcolor>FFFFFFFF</focusedcolor>
-					<texturenofocus border="10" diffuse="box.png" colordiffuse="D0FFFFFF">focus.png</texturenofocus>
-					<texturefocus border="10" diffuse="box.png" colordiffuse="$INFO[Window.Property(color)]">focus.png</texturefocus>
+					<focusedcolor>FF0B1B26</focusedcolor>
+					<texturenofocus border="10" diffuse="box.png" colordiffuse="FF1C232B">focus.png</texturenofocus>
+					<texturefocus border="10" colordiffuse="FF56B4E9">box.png</texturefocus>
 					<onclick>SetProperty(xstream_menu,Info)</onclick>
 					<animation reversible="false" center="auto" easing="inout" effect="zoom" end="100" start="90" time="400" tween="back">Focus</animation>
 					<visible>!String.IsEqual(Window.Property(xstream_menu),Info)</visible>
@@ -919,11 +941,11 @@
 					<font>font12</font>
 					<height>40</height>
 					<width>auto</width>
-					<label>Info</label>
+					<label>$ADDON[plugin.video.xstream 30241]</label>
 					<textcolor>FFFFFFFF</textcolor>
-					<focusedcolor>FFFFFFFF</focusedcolor>
-					<texturenofocus border="10" diffuse="box.png" colordiffuse="D0FFFFFF">focus.png</texturenofocus>
-					<texturefocus border="10" diffuse="box.png" colordiffuse="$INFO[Window.Property(color)]">focus.png</texturefocus>
+					<focusedcolor>FF0B1B26</focusedcolor>
+					<texturenofocus border="10" diffuse="box.png" colordiffuse="FF1C232B">focus.png</texturenofocus>
+					<texturefocus border="10" colordiffuse="FF56B4E9">box.png</texturefocus>
 					<onclick>SetProperty(xstream_menu,Syno)</onclick>
 					<animation reversible="false" center="auto" easing="inout" effect="zoom" end="100" start="90" time="400" tween="back">Focus</animation>
 					<visible>String.IsEqual(Window.Property(xstream_menu),Info)</visible>
@@ -936,11 +958,11 @@
 					<font>font12</font>
 					<height>40</height>
 					<width>auto</width>
-					<label>Cast</label>
+					<label>$ADDON[plugin.video.xstream 30903]</label>
 					<textcolor>FFFFFFFF</textcolor>
-					<focusedcolor>FFFFFFFF</focusedcolor>
-					<texturenofocus border="10" diffuse="box.png" colordiffuse="D0FFFFFF">focus.png</texturenofocus>
-					<texturefocus border="10" diffuse="box.png" colordiffuse="$INFO[Window.Property(color)]">focus.png</texturefocus>
+					<focusedcolor>FF0B1B26</focusedcolor>
+					<texturenofocus border="10" diffuse="box.png" colordiffuse="FF1C232B">focus.png</texturenofocus>
+					<texturefocus border="10" colordiffuse="FF56B4E9">box.png</texturefocus>
 					<animation reversible="false" center="auto" easing="inout" effect="zoom" end="100" start="90" time="400" tween="back">Focus</animation>
 					<onclick>SetProperty(xstream_menu,Cast)</onclick>
 					<visible>!Player.HasMedia</visible>
@@ -952,11 +974,11 @@
 					<font>font12</font>
 					<height>40</height>
 					<width>auto</width>
-					<label>Similar</label>
+					<label>$ADDON[plugin.video.xstream 30904]</label>
 					<textcolor>FFFFFFFF</textcolor>
-					<focusedcolor>FFFFFFFF</focusedcolor>
-					<texturenofocus border="10" diffuse="box.png" colordiffuse="D0FFFFFF">focus.png</texturenofocus>
-					<texturefocus border="10" diffuse="box.png" colordiffuse="$INFO[Window.Property(color)]">focus.png</texturefocus>
+					<focusedcolor>FF0B1B26</focusedcolor>
+					<texturenofocus border="10" diffuse="box.png" colordiffuse="FF1C232B">focus.png</texturenofocus>
+					<texturefocus border="10" colordiffuse="FF56B4E9">box.png</texturefocus>
 					<animation reversible="false" center="auto" easing="inout" effect="zoom" end="100" start="90" time="400" tween="back">Focus</animation>
 					<onclick>SetProperty(xstream_menu,Simil)</onclick>
 					<visible>!Player.HasMedia</visible>
@@ -968,11 +990,11 @@
 					<font>font12</font>
 					<height>40</height>
 					<width>auto</width>
-					<label>Trailer</label>
+					<label>$ADDON[plugin.video.xstream 30027]</label>
 					<textcolor>FFFFFFFF</textcolor>
-					<focusedcolor>FFFFFFFF</focusedcolor>
-					<texturenofocus border="10" diffuse="box.png" colordiffuse="D0FFFFFF">focus.png</texturenofocus>
-					<texturefocus border="10" diffuse="box.png" colordiffuse="$INFO[Window.Property(color)]">focus.png</texturefocus>
+					<focusedcolor>FF0B1B26</focusedcolor>
+					<texturenofocus border="10" diffuse="box.png" colordiffuse="FF1C232B">focus.png</texturenofocus>
+					<texturefocus border="10" colordiffuse="FF56B4E9">box.png</texturefocus>
 					<animation reversible="false" center="auto" easing="inout" effect="zoom" end="100" start="90" time="400" tween="back">Focus</animation>
 					<visible>!Player.HasMedia</visible>
 				</control>

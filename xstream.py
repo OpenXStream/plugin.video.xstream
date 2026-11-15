@@ -20,6 +20,7 @@ from resources.lib.config import cConfig
 from resources.lib.logger import logger
 from resources.lib.tools import cParser, infoDialog
 from resources.lib.cache import cCache
+from resources.lib.player import applyIsa, probeStream
 from xbmcvfs import translatePath
 
 def _getResolver():
@@ -46,7 +47,8 @@ def viewInfo(params):
     sCleanTitle = params.getValue('searchTitle')
     sMeta = parms.getValue('sMeta')
     sYear = parms.getValue('sYear')
-    WindowsBoxes(sCleanTitle, sCleanTitle, sMeta, sYear)
+    sTmdbId = parms.getValue('tmdb_id') or ''   # aus dem Kontextmenue, wenn der Eintrag die ID kennt
+    WindowsBoxes(sCleanTitle, sCleanTitle, sMeta, sYear, sTmdbId)
 
 
 def parseUrl():
@@ -70,29 +72,21 @@ def parseUrl():
         elif sFunction == 'playTrailer':
             from resources.lib.trailer import playTrailer
             try:
-                # Map prefLanguage setting to language code
-                _pref = cConfig().getSetting('prefLanguage') or '0'
-                _kodi_lang = xbmc.getLanguage(xbmc.ISO_639_1) or 'de'
-                _lang_map = {'0': _kodi_lang, '1': 'de', '2': 'en', '3': 'ja'}
-                _pref_lang = _lang_map.get(_pref, _kodi_lang)
+                # Die Sprache legt playTrailer selbst fest (Deutsch, Englisch, Rest) — keine Einstellung
                 playTrailer(
                     tmdb_id=params.getValue('tmdb_id') or '',
                     mediatype=params.getValue('mediatype') or 'movie',
                     title=params.getValue('title') or '',
                     year=params.getValue('year') or '',
                     poster=params.getValue('poster') or '',
-                    pref_lang=_pref_lang,
                 )
             except Exception:
                 import traceback
                 logger.error('Trailer error: %s' % traceback.format_exc())
-                cGui.showError('Trailer', 'Trailer-Suche fehlgeschlagen')
+                cGui.showError(cConfig().getLocalizedString(30027), cConfig().getLocalizedString(30900))  # wie TMDB Info (info.py)
             return
         elif sFunction == 'searchAlter':
             _searchAlterGuarded(params)
-            return
-        elif sFunction == 'searchTMDB':
-            searchTMDB(params)
             return
         elif sFunction == 'manualResolverUpdate':
             xbmc.executebuiltin('ActivateWindow(busydialognocancel)')
@@ -104,18 +98,6 @@ def parseUrl():
             return
         elif sFunction == 'pluginInfo':
             cPluginHandler().pluginInfo()
-            return
-        elif sFunction == 'changelog':
-            changelog_path = os.path.join(translatePath('special://home/addons/%s/' % cConfig().getAddonInfo('id')), 'changelog.txt')
-            if not os.path.isfile(changelog_path):
-                infoDialog(cConfig().getLocalizedString(30822), icon='INFO')
-                return
-            with open(changelog_path, 'r', encoding='utf-8') as f:
-                text = f.read()
-            if not text.strip():
-                infoDialog(cConfig().getLocalizedString(30821), icon='INFO')
-            else:
-                xbmcgui.Dialog().textviewer('Changelog', text)
             return
         elif sFunction == 'domainCheck':
             xbmc.executebuiltin('ActivateWindow(busydialognocancel)')
@@ -133,11 +115,20 @@ def parseUrl():
             remotePlayUrl = params.getValue('remoteplayurl')
             sLink = resolver.resolve(remotePlayUrl)
             if sLink:
+                # Vorab-Abruf wie bei jeder Hoster-Wiedergabe (player.probeStream, seit dem
+                # 05.11.2026): ohne Antwort kein Start, nur die Einblendung.
+                bAnswered, head = probeStream(sLink)
+                if not bAnswered:
+                    cGui.showError('xStream', cConfig().getLocalizedString(30921), 7)
+                    return
                 # Nicht per Textbefehl starten: eine Klammer oder ein Komma in
                 # der aufgeloesten Adresse wuerde `PlayMedia(...)` zerreissen
                 # und der Aufruf liefe ins Leere. Ueber die Player-Schnittstelle
                 # wird die Adresse als Wert uebergeben, nicht als Text.
-                xbmc.Player().play(sLink, xbmcgui.ListItem(path=sLink))
+                # HLS ueber InputStream Adaptive, wenn es aktiv ist (player.py).
+                oListItem = xbmcgui.ListItem(path=sLink)
+                sLink, _isa = applyIsa(oListItem, sLink, head)
+                xbmc.Player().play(sLink, oListItem)
             else:
                 logger.debug('Could not play remote url %s' % sLink)
         except resolver.resolver.ResolverError as e:
@@ -168,11 +159,10 @@ def parseUrl():
         return
 
     logger.debug("Call function '%s' from '%s'" % (sFunction, sSiteName))
-    # If the hoster gui is called, run the function on it and return
-    if sSiteName == 'cHosterGui':
-        showHosterGui(sFunction)
+    # Den Zweig site=cHosterGui (showHosterGui: jede Methode der Hoster-GUI per Namen aus der Adresse, ohne
+    # Pruefung) gab es bis zum 02.11.2026 — keine Stelle im Addon baute je eine solche Adresse.
     # If global search is called
-    elif sSiteName == 'globalSearch':
+    if sSiteName == 'globalSearch':
         searchterm = False
         if params.exist('searchterm'):
             searchterm = params.getValue('searchterm')
@@ -212,10 +202,6 @@ def parseUrl():
     # Plugin Infos    
     elif sSiteName == 'pluginInfo':
         cPluginHandler().pluginInfo()
-    # Changelog anzeigen    
-    elif sSiteName == 'changelog':
-        from resources.lib import tools
-        tools.changelog()
     # Manueller Domain Check
     # Fallback-Pfad: greift nur wenn URL ohne function= konstruiert wird (cGuiElement ohne setFunction).
     # Aktuelle Buttons setzen beides, daher wird dieser Pfad praktisch nicht erreicht -
@@ -259,8 +245,8 @@ def parseUrl():
         # deckt sie auf einmal ab, auch kuenftige.
         # ABSICHTLICH an die Meldung gekoppelt und nicht pauschal: ein STILL
         # abgebrochener Aufruf (Tastatur mit Zurueck verlassen) gibt keine
-        # Meldung aus und soll weiterhin zurueckspringen (Jacks Entscheidung
-        # vom 10.08.2026), nicht in einer leeren Liste enden.
+        # Meldung aus und soll weiterhin zurueckspringen (so entschieden
+        # am 10.08.2026), nicht in einer leeren Liste enden.
         if cGui._infoShown and not cGui._endSet:
             cGui().setEndOfDirectory()
 
@@ -332,9 +318,9 @@ def showMainMenu(sFunction):
 
     oGui = cGui()
 
-    # Vavoo TV ganz oben (ueber der globalen Suche), wenn aktiviert
-    if cConfig().getSetting('vavooTvEnabled') == 'true':
-        oGui.addFolder(vavooTvGuiElement())
+    # Vavoo TV ganz oben (ueber der globalen Suche), fest — den Schalter „Vavoo TV aktivieren" gibt es seit dem
+    # 01.11.2026 nicht mehr (so entschieden); der Eintrag ruft beim Aufbau des Menues nichts ab
+    oGui.addFolder(vavooTvGuiElement())
 
     # Globale Suche fest an erster Stelle (nach Vavoo, kein Toggle mehr)
     oGui.addFolder(globalSearchGuiElement())
@@ -440,14 +426,15 @@ def tmdbBrowserGuiElement():
     oGuiElement.setTitle('TMDB Browser')
     oGuiElement.setSiteName('tmdb_browser')
     oGuiElement.setFunction('load')
-    oGuiElement.setThumbnail(os.path.join(ART, 'tmdb_browser.png'))
+    # Logo unter art/sites/ wie bei den Sites — Grund im Kopf von resources/lib/tmdb/browser.py
+    oGuiElement.setThumbnail(os.path.join(ART, 'sites', 'tmdb_browser.png'))
     return oGuiElement
 
 
 def vavooTvGuiElement():
     ART = os.path.join(cConfig().getAddonInfo('path'), 'resources', 'art')
 
-    # Eigenstaendiger Live-TV Menuepunkt (Vavoo). Laedt direkt in die Laenderliste.
+    # Eigenstaendiger Live-TV Menuepunkt (Vavoo). Laedt direkt die deutsche Senderliste.
     # Eigene Logik in resources/lib/vavoo/, Dispatch ueber site=vavootv in parseUrl().
     oGuiElement = cGuiElement()
     oGuiElement.setTitle(cConfig().getLocalizedString(30842))
@@ -455,14 +442,6 @@ def vavooTvGuiElement():
     oGuiElement.setFunction('load')
     oGuiElement.setThumbnail(os.path.join(ART, 'vavoo.png'))
     return oGuiElement
-
-
-def showHosterGui(sFunction):
-    from resources.lib.gui.hoster import cHosterGui
-    oHosterGui = cHosterGui()
-    function = getattr(oHosterGui, sFunction)
-    function()
-    return True
 
 
 def _serializeSearchResults(results):
@@ -513,38 +492,14 @@ def _completedOrAborted(futures, dialog):
 
 
 def _preloadMeta(aResults):
-    """Metadaten aller Treffer vorab parallel holen.
+    """Metadaten aller Treffer vorab parallel holen (globale Suche, Weitere Quellen).
 
-    Die Anzeigeschleife ruft ueber `addFolder` fuer JEDEN Treffer `getMeta` auf,
-    und das ist je Eintrag eine TMDB-Abfrage. Nacheinander summiert sich das:
-    gemessen rund 2,8 s fuer 20 Treffer, bei traegen Antworten deutlich mehr.
-    Parallel sind es 0,2 s.
-
-    `getMeta` setzt dabei selbst `_isMetaSet`, deshalb ueberspringt `addFolder`
-    den Abruf danach komplett — es wird nichts doppelt geholt.
-
-    WICHTIG `submit` statt `map`: bei `map` fliegt die erste Exception beim
-    Iterieren weiter und reisst den ganzen Vorlauf mit. Jedes Ergebnis wird
-    deshalb einzeln abgefangen. Nebeneffekt, der ein bestehendes Problem loest:
-    vorher brach ein einzelner fehlgeschlagener Abruf die komplette
-    Anzeigeschleife ab, die restlichen Treffer erschienen dann gar nicht.
+    Der parallele Vorlauf selbst steht seit dem 25.10.2026 EINMAL in cGui.preloadMeta —
+    dieselbe Mechanik nutzt setEndOfDirectory fuer jede Liste. Hier bleibt nur der Aufruf
+    auf die gesammelten Treffer; die Anzeigeschleife danach holt nichts doppelt, weil
+    getMeta _isMetaSet setzt.
     """
-    aNeeded = [r['guiElement'] for r in aResults
-               if getattr(r['guiElement'], '_mediaType', '')
-               and not getattr(r['guiElement'], '_isMetaSet', False)]
-    if not aNeeded:
-        return
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(10, len(aNeeded))) as executor:
-            aFutures = [executor.submit(oElement.getMeta, oElement._mediaType, mode='add')
-                        for oElement in aNeeded]
-            for oFuture in aFutures:
-                try:
-                    oFuture.result()
-                except Exception:
-                    pass        # ein gescheiterter Abruf darf die uebrigen nicht mitreissen
-    except Exception as e:
-        logger.error('Meta-Vorlauf fehlgeschlagen: %s' % e)
+    cGui.preloadMeta([(r['guiElement'], '') for r in aResults])
 
 
 def _canGoBack(params):
@@ -700,7 +655,7 @@ def _searchGlobal(sSearchText=False):
     if not total:
         # Waehrend des Sammelns sind die Meldungen der einzelnen Seiten bewusst
         # unterdrueckt (siehe cGui.showInfo). Liefert am Ende keine Seite etwas,
-        # stand hier ein leeres Verzeichnis ohne jeden Hinweis (Audit 01.09.2026).
+        # stand hier ein leeres Verzeichnis ohne jeden Hinweis (01.09.2026).
         # Der Schutz wird deshalb vor der Meldung zurueckgenommen.
         cGui._globalSearch = False
         oGui.showInfo()
@@ -888,75 +843,6 @@ def searchAlter(params):
     # Suche als ungueltig ab („container.update called with invalid number of
     # parameters") und tat nichts — die Liste steht mit setEndOfDirectory.
     return True
-
-def searchTMDB(params):
-    sSearchText = params.getValue('searchTitle')
-    oGui = cGui()
-    oGui.globalSearch = True
-    oGui._collectMode = True
-
-    if not sSearchText:
-        oGui.setEndOfDirectory()
-        return True
-
-    aPlugins = cPluginHandler().getAvailablePlugins()
-
-    dialog = xbmcgui.DialogProgress()
-    dialog.create(cConfig().getLocalizedString(30122), cConfig().getLocalizedString(30123))
-
-    searchablePlugins = [
-        pluginEntry for pluginEntry in aPlugins
-        if pluginEntry['globalsearch'] != 'false'
-    ]
-
-    def worker(pluginEntry):
-        logger.debug('Searching for %s at %s' % (sSearchText, pluginEntry['id']))
-        _pluginSearch(pluginEntry, sSearchText, oGui)
-        return pluginEntry['name']
-
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
-    try:
-        future_to_plugin = {executor.submit(worker, plugin): plugin for plugin in searchablePlugins}
-
-        for count, future in enumerate(_completedOrAborted(future_to_plugin, dialog)):
-            plugin = future_to_plugin[future]
-            if dialog.iscanceled():
-                _abortSearch(executor, future_to_plugin, oGui)
-                return
-            try:
-                name = future.result()
-            except Exception as e:
-                name = plugin['name']
-                logger.error(f"Fehler bei Plugin {name}: {str(e)}")
-            dialog.update((count + 1) * 50 // len(searchablePlugins) + 50, name + cConfig().getLocalizedString(30125))
-        if dialog.iscanceled():
-            _abortSearch(executor, future_to_plugin, oGui)
-            return
-        executor.shutdown(wait=True)
-    finally:
-        dialog.close()
-
-    oGui._collectMode = False
-    total = len(oGui.searchResults)
-    _preloadMeta(oGui.searchResults)
-
-    dialog = xbmcgui.DialogProgress()
-    dialog.create(cConfig().getLocalizedString(30126), cConfig().getLocalizedString(30127))
-
-    try:
-        for count, result in enumerate(sorted(oGui.searchResults, key=lambda k: k['guiElement'].getSiteName()), 1):
-            if dialog.iscanceled():
-                oGui.setEndOfDirectory()
-                return
-            oGui.addFolder(result['guiElement'], result['params'], bIsFolder=result['isFolder'], iTotal=total)
-            dialog.update(count * 100 // total, str(count) + cConfig().getLocalizedString(30128) + str(total) + ': ' + result['guiElement'].getTitle())
-    finally:
-        # Auch hier gilt: das return oben darf den Dialog nicht stehen lassen.
-        dialog.close()
-    oGui.setView()
-    oGui.setEndOfDirectory()
-    return True
-
 
 def _pluginSearch(pluginEntry, sSearchText, oGui):
     try:

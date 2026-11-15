@@ -7,7 +7,7 @@
 # `_passRedirectGate`, burningseries reCAPTCHA).
 #
 # Rollen im Captcha-Ordner: captcha_solver.py ist die bezahlte Dienst-Anbindung
-# (2captcha), local_solver.py rechnet selbst (Altcha, HostAdmin), captcha_helper.py ist
+# (2captcha), das Paket local/ rechnet selbst (Altcha, HostAdmin), captcha_helper.py ist
 # der Klebstoff (Bereitschaft, solve_*, Sitekey-Extraktoren) — und hier stehen
 # die Muster. Je Schema ein Erkenner `matches(html)` und ein Raeumer
 # `clear(...)`; `clear_gate(url)` darunter ist der Dispatcher, den
@@ -29,8 +29,11 @@ from resources.lib.config import cConfig
 from resources.lib.tools import infoDialog
 from resources.lib.captcha.captcha_helper import captcha_ready, solve_turnstile, extract_turnstile_sitekey
 
-# Kennzeichen einer Seite mit Cloudflare Turnstile; im Kompatibilitätsmodus
-# heisst das Widget-Element 'g-recaptcha', Google ist dabei nicht beteiligt
+# Kennzeichen einer Seite mit Cloudflare Turnstile: der Anfang der Skript-Adresse
+# des Widgets (challenges.cloudflare.com/turnstile/v0/api.js, in der
+# Kompatibilitaets-Form mit ?compat=recaptcha — Cloudflare-Turnstile-Doku, gelesen
+# 14.10.2026). Im Kompatibilitätsmodus heisst das Widget-Element 'g-recaptcha' und
+# das Antwortfeld 'g-recaptcha-response', Google ist dabei nicht beteiligt
 TURNSTILE_MARKER = 'challenges.cloudflare.com/turnstile'
 
 
@@ -70,8 +73,7 @@ class TurnstileFormGate:
         infoDialog(cConfig().getLocalizedString(30825), icon='INFO', time=10000)
         token = solve_turnstile(sitekey, pageUrl)
         if not token:
-            infoDialog(cConfig().getLocalizedString(30826), icon='ERROR', time=10000)
-            return False
+            return False   # gemeldet hat schon solve_turnstile (Grund bzw. „Captcha nicht geloest")
 
         data = dict(re.findall(r'<input[^>]+type=["\']hidden["\'][^>]*name=["\']([^"\']+)["\'][^>]*value=["\']([^"\']*)["\']', htmlContent))
         # Turnstile im reCAPTCHA-Kompatibilitätsmodus füllt beide Feldnamen
@@ -133,9 +135,9 @@ def clear_gate(sUrl):
         # (gemessen 08.09.2026: mal ging es, mal nicht). Der aktuelle Master
         # (09/2026) baut den Opener im Konstruktor immer.
         # ssl_verify=False wie in ResolveURLs eigenen Resolvern fuer Hoster mit
-        # unvollstaendiger Zertifikatskette (vids.st, cimanow, playhd): mit der
+        # unvollstaendiger Zertifikatskette (VidsSt, CimaNow, PlayHD): mit der
         # Pruefung brach der Gate-Check dort mit CERTIFICATE_VERIFY_FAILED ab,
-        # bevor er die Seite sah (Jacks Log 30.09.2026, vids.st), waehrend
+        # bevor er die Seite sah (Log vom 30.09.2026, VidsSt), waehrend
         # Gujals VidsSt-Resolver dieselbe Seite ohne Pruefung bekam. Unser
         # requestHandler prueft ohnehin nicht; Geheimnisse gehen hier nicht mit.
         net = resolverCommon.Net(user_agent=resolverCommon.RAND_UA, ssl_verify=False)

@@ -24,21 +24,6 @@ def main():
     logger.debug('Start xStream Log, Version %s' % cConfig().getAddonInfo('version'))
     logger.debug('Python-Version: %s' % platform.python_version())
 
-    # RunScript handler for changelog button in settings
-    if len(sys.argv) > 1 and sys.argv[1] == 'changelog':
-        import xbmcgui
-        changelog_path = os.path.join(_addonPath_, 'changelog.txt')
-        if not os.path.isfile(changelog_path):
-            infoDialog(cConfig().getLocalizedString(30822), icon='INFO')
-            return
-        with open(changelog_path, 'r', encoding='utf-8') as f:
-            text = f.read()
-        if not text.strip():
-            infoDialog(cConfig().getLocalizedString(30821), icon='INFO')
-        else:
-            xbmcgui.Dialog().textviewer('Changelog', text)
-        return
-
     try:
         parseUrl()
     except Exception as e:

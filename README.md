@@ -63,11 +63,15 @@ die sich bis heute tatkräftig beteiligen.
 Hoster-Resolver-Backbone von Kodi. Ohne ResolveURL gäbe es kein
 zuverlässiges Stream-Resolving für die aggregierten Hoster.
 
-**meinecloud**
-Player-Dienst, hinter dem mehrere Seiten ihre Hoster bündeln. xStream fragt ihn
-für Staffeln, Folgen und Hoster direkt ab.
+**[InputStream Adaptive](https://github.com/xbmc/inputstream.adaptive)**
+Kodis Stream-Modul für HLS. xStream spielt HLS-Streams darüber ab, wenn es
+aktiv ist; sonst läuft die Wiedergabe über Kodis eigenen Player.
 
-**[Vavoo](https://vavoo.to/)**
+**meinecloud / DEVIDEOSRC**
+Player-Plattform, hinter der mehrere Seiten ihre Hoster bündeln (seit 09/2026 unter
+beiden Namen). xStream fragt sie für Staffeln, Folgen und Hoster direkt ab.
+
+**Vavoo**
 Grundlage für den Live-TV-Bereich — Senderliste und Streams.
 
 **[Internet Archive](https://archive.org/)**
@@ -101,10 +105,6 @@ Einstellungen hinterlegt wird — ohne Schlüssel bleibt die Funktion schlicht a
 
 **[Cloudflare DNS](https://www.cloudflare.com/dns/)**
 Namensauflösung per DNS-over-HTTPS, wenn der normale Weg blockiert ist.
-
-**[DDoS-Guard](https://ddos-guard.net/)**
-Schutzsystem einiger Seiten. Die Freischaltung per Cookie holt sich xStream
-automatisch, wenn eine Seite dahinter liegt.
 
 **[GitHub](https://github.com/)**
 Über die GitHub-API hält das Addon ResolveURL aktuell — es prüft den

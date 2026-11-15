@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 # Python 3
 
+import re
 import time
 import xbmcgui
-import re
 import os
 import hashlib
 import json
@@ -11,6 +11,7 @@ import traceback
 import ssl
 import certifi
 import socket
+import ipaddress
 import zlib
 import threading
 import http.client
@@ -25,7 +26,7 @@ from xbmcvfs import translatePath
 from urllib.parse import quote, urlencode, urlparse, quote_plus, urljoin
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPHandler, HTTPSHandler, Request, HTTPCookieProcessor, build_opener, urlopen, HTTPRedirectHandler
-from http.cookiejar import LWPCookieJar, Cookie
+from http.cookiejar import LWPCookieJar
 from http.client import HTTPException
 from contextlib import contextmanager
 from functools import partial
@@ -43,6 +44,13 @@ ERR_TIMEOUT = 'TIMEOUT'
 ERR_URL = 'URL FEHLER'
 REQUEST_ERRORS = (ERR_UNREACHABLE, ERR_CLOUDFLARE, ERR_DDOS, ERR_TIMEOUT, ERR_URL)
 
+# Merkmale der DDoS-Guard-Pruefseite (Titel, eigene Skripte, Pruefdienst; aus einer
+# echten Pruefseite, 09.10.2026) — einer genuegt. Der Header `server: ddos-guard`
+# steht dagegen auf JEDER Antwort einer Seite dahinter, auch auf einer normalen 404
+# oder 502 des Ursprungs (gemessen 09.10.2026 an serienstream, filmo, aniworld), und
+# taugt deshalb nicht als Merkmal.
+DDOS_GUARD_MARKERS = ('check.ddos-guard.net', '/.well-known/ddos-guard/', '<title>ddos-guard</title>')
+
 # DNS-Bypass: die per DoH aufgeloeste IP wird THREAD-LOKAL an den Hostnamen gebunden
 # und beim Verbindungsaufbau von den eigenen Handlern unten benutzt. Frueher lief das
 # ueber einen prozessweiten Tausch von socket.getaddrinfo — der leckte zwischen Threads
@@ -53,35 +61,227 @@ REQUEST_ERRORS = (ERR_UNREACHABLE, ERR_CLOUDFLARE, ERR_DDOS, ERR_TIMEOUT, ERR_UR
 # __doh_request (bewusst kein Cache, siehe dort).
 _dohPins = threading.local()
 
+# Hat der Handler in DIESEM Thread einen Abruffehler gemeldet (Einblendung oder Fenster)? cGui.showInfo laesst
+# dann die allgemeine Leer-Meldung weg, cGui.showError die allgemeine Hoster-Meldung — sonst kamen zwei Hinweise
+# fuer einen Klick, etwa bei der kinoger-Suche hinter Cloudflare „CloudFlare-Schutz aktiv" und direkt danach
+# „Kein Eintrag gefunden" (26.10.2026). Thread-lokal wie _dohPins: die globale Suche ruft die Sites in eigenen Threads ab, und ihre
+# Sammelmeldung im Haupt-Thread bleibt davon unberuehrt. Jeder Kodi-Aufruf ist ein frischer Interpreter
+# (kein reuselanguageinvoker), der Merker beginnt also mit jedem Klick leer. Auch captcha_helper._solved
+# setzt ihn, wenn es ein gescheitertes Captcha gemeldet hat.
+_errorShown = threading.local()
 
-def _dohPin(host):
-    # Liefert die gepinnte IP fuer 'host' (ohne Port, klein) oder None.
-    host = (host or '').split(':')[0].lower()
-    return getattr(_dohPins, 'ip_map', {}).get(host)
+
+def errorShown():
+    return getattr(_errorShown, 'flag', False)
+
+
+def _markErrorShown():
+    _errorShown.flag = True
+
+
+# Laeuft gerade der Hosterlink-Schritt (hoster.py um den Aufruf der Hosterlink-Funktion der Site)? Dann bleiben die
+# Fehlerfenster des Handlers (Adresse + Fehlertext bei 4xx/5xx, URLError, HTTPException, OSError, CUII) aus und es
+# gibt nur die Logzeile: ein toter Hosterlink ist fuer den Nutzer „Stream nicht verfuegbar", das meldet hoster.py mit
+# EINER Einblendung — das Fenster blockierte dort je totem Hoster einmal, im Auto-Modus bei zwei toten Hostern zweimal
+# (filmo 26.10.2026: /n/<token> 404 je VOE-Link). Die Einblendungen (Cloudflare, DDoS-Guard, Timeout) bleiben, sie
+# blockieren nicht und sagen, woran es lag; bei ihnen entfaellt dafuer die Meldung von hoster.py (cGui.showError).
+# Seitenabrufe (Listen, Hosterliste) sind nicht betroffen, dort bleibt das Fenster mit der vollen Adresse (so entschieden
+# am 25.08.2026). Prozessweit statt thread-lokal: der Hosterlink-Schritt ist der einzige Weg dieses Aufrufs, und ein
+# Thread, den eine Site dabei startet, soll genauso still bleiben.
+_quietWindows = {'flag': False}
 
 
 @contextmanager
-def _doh_resolution(hostname, ip):
-    """Bindet 'hostname' fuer die Dauer des Blocks im AKTUELLEN Thread an 'ip'.
-    Ohne ip passiert nichts. Das TLS-Zertifikat bleibt gueltig, weil die Verbindung
-    weiterhin den echten Hostnamen kennt (SNI + Cert-Hostname stimmen) — nur die
-    TCP-Verbindung geht zur IP statt zur DNS-Antwort des Systems."""
-    if not ip:
+def quietWindows():
+    before = _quietWindows['flag']
+    _quietWindows['flag'] = True
+    try:
+        yield
+    finally:
+        _quietWindows['flag'] = before
+
+
+def _windowsQuiet():
+    return _quietWindows['flag']
+
+
+# RedirectFilter hat eine CUII-Weiterleitung verweigert und gemeldet — request() bekommt dieselbe Antwort gleich
+# darauf als HTTPError 3xx und laesst dann das eigene Fenster weg. Thread-lokal wie _errorShown.
+_cuiiRefused = threading.local()
+
+
+def _dohPin(host):
+    # Liefert die gepinnte IP fuer 'host' (ohne Port, klein) oder None. Laeuft gerade ein Abruf mit DNS-Umgehung
+    # (Resolver im Thread gesetzt, _doh_resolution), wird ein noch unbekannter Host hier per DoH aufgeloest und fuer
+    # den Rest des Abrufs gemerkt — so gilt die Umgehung fuer JEDEN Hop, auch nach einer Weiterleitung auf einen
+    # anderen Host. Bis zum 02.11.2026 galt sie nur fuer den ersten: der zweite Name lief ueber das System-DNS
+    # (lokal nachgestellt). Ein Fehlschlag wird als '' gemerkt, damit derselbe Abruf nicht erneut fragt.
+    host = (host or '').split(':')[0].lower()
+    ip_map = getattr(_dohPins, 'ip_map', None)
+    if ip_map is None:
+        ip_map = _dohPins.ip_map = {}
+    resolver = getattr(_dohPins, 'resolver', None)
+    if host and host not in ip_map and resolver is not None:
+        ip_map[host] = resolver(host) or ''
+    return ip_map.get(host) or None
+
+
+@contextmanager
+def _doh_resolution(hostname, ip, resolver=None):
+    """Bindet 'hostname' fuer die Dauer des Blocks im AKTUELLEN Thread an 'ip'; mit resolver loest der Block
+    jeden Host, mit dem er sich verbindet, bei der ersten Verbindung selbst per DoH auf (_dohPin). Ohne ip und
+    resolver passiert nichts. Das TLS-Zertifikat bleibt gueltig, weil die Verbindung weiterhin den echten
+    Hostnamen kennt (SNI + Cert-Hostname stimmen) — nur die TCP-Verbindung geht zur IP statt zur DNS-Antwort
+    des Systems. Nach dem Block gilt wieder genau der Stand davor."""
+    if not ip and resolver is None:
         yield
         return
     ip_map = getattr(_dohPins, 'ip_map', None)
     if ip_map is None:
         ip_map = _dohPins.ip_map = {}
-    key = (hostname or '').lower()
-    previous = ip_map.get(key)
-    ip_map[key] = ip
+    before = dict(ip_map)
+    before_resolver = getattr(_dohPins, 'resolver', None)
+    if ip:
+        ip_map[(hostname or '').lower()] = ip
+    if resolver is not None:
+        _dohPins.resolver = resolver
     try:
         yield
     finally:
-        if previous is None:
-            ip_map.pop(key, None)
+        ip_map.clear()
+        ip_map.update(before)
+        _dohPins.resolver = before_resolver
+
+
+def _entpacke(data, sEncoding, sUrl='', bStreng=False):
+    """Rumpf nach Content-Encoding entpacken wie ein Browser. deflate kommt in zlib-Form (RFC 9110, so senden es
+    nginx und Apache) oder roh, probiert wird beides; was gar nicht passt (als gzip ausgewiesener Klartext), bleibt
+    roh. Ein ABGESCHNITTENER Strom (Verbindung mittendrin weg, Laenge unbekannt oder Strom in sich unvollstaendig —
+    zlib meldet es ueber eof) wirft mit bStreng IncompleteRead wie _rumpf bei kurzer Content-Length: der Aufrufer
+    meldet den abgebrochenen Abruf, und die halbe Seite landet nicht als vollstaendige Antwort im Cache (bis zum
+    02.11.2026 stand sie dort bis cacheTime). Ohne bStreng (Fehlerseite, Trailer) liefert er, was
+    ankam, und wirft nie. Bis zum 02.11.2026 nahm der Erfolgszweig nur rohes deflate und heiles gzip an — alles
+    andere warf zlib.error als Skriptfehler (lokal nachgestellt)."""
+    if sEncoding in ('gzip', 'x-gzip'):   # x-gzip = gzip (RFC 9110)
+        aWbits = (zlib.MAX_WBITS | 16,)
+    elif sEncoding == 'deflate':
+        aWbits = (zlib.MAX_WBITS, -zlib.MAX_WBITS)
+    else:
+        return data
+    if not data:
+        return data   # leerer Rumpf mit Content-Encoding (Content-Length 0): leer, kein abgeschnittener Strom
+    for wbits in aWbits:
+        try:
+            oZ = zlib.decompressobj(wbits)
+            out = oZ.decompress(data)
+            while oZ.eof and oZ.unused_data.startswith(b'\x1f\x8b'):   # weiteres gzip-Glied (RFC 9110 erlaubt mehrere)
+                oZ, rest = zlib.decompressobj(wbits), oZ.unused_data
+                out += oZ.decompress(rest)
+        except zlib.error:
+            continue
+        if bStreng and not oZ.eof:
+            raise http.client.IncompleteRead(out, None)
+        return out
+    logger.error(' -> [requestHandler]: Antwort nicht entpackbar (%s), nehme sie roh: %s' % (sEncoding, sUrl))
+    return data
+
+
+# Gesamtfrist fuer das Lesen eines Rumpfs: der Lese-Timeout (requestTimeout) gilt je Stueck, ein tropfender Server (ein
+# paar Bytes je Sekunde, nie eine Pause laenger als der Timeout) hielt den Aufruf bis zum 02.11.2026 beliebig lange (lokal
+# nachgestellt). Frist = RUMPF_FAKTOR x requestTimeout, mindestens RUMPF_MINDESTFRIST Sekunden —
+# Seiten und JSON-Antworten sind klein, Dateien laedt der requestHandler nicht (updateManager nutzt requests).
+RUMPF_MINDESTFRIST = 60
+RUMPF_FAKTOR = 6
+
+
+def _rumpf(fp, iFrist):
+    """Rumpf in Stuecken lesen; ist er nach iFrist Sekunden nicht zu Ende, socket.timeout (der Zweig des Lese-Timeouts).
+    read1 liefert, was gerade da ist (read(n) wartete im Puffer auf n Bytes); endet der Strom vor der angekuendigten
+    Content-Length, IncompleteRead wie bei read() ohne Laenge — der Aufrufer meldet den abgebrochenen Rumpf."""
+    t0 = time.time()
+    lesen = getattr(fp, 'read1', fp.read)
+    aTeile = []
+    while True:
+        teil = lesen(65536)
+        if not teil:
+            data = b''.join(aTeile)
+            iRest = getattr(fp, 'length', None)
+            if iRest:
+                raise http.client.IncompleteRead(data, iRest)
+            return data
+        aTeile.append(teil)
+        if time.time() - t0 > iFrist:
+            raise socket.timeout('Rumpf nach %d s nicht vollstaendig' % iFrist)
+
+
+# Zeichensatz-Namen, die ein Browser als windows-1252 liest (WHATWG Encoding Standard, Label-Tabelle): die
+# Bytes 0x80-0x9F sind dort Anfuehrungszeichen, Gedankenstrich und Euro — als iso-8859-1 gelesen waeren es
+# Steuerzeichen. Python kennt diese Gleichsetzung nicht.
+_CP1252_LABELS = ('iso-8859-1', 'iso8859-1', 'iso_8859-1', 'latin1', 'latin-1', 'l1', 'ascii', 'us-ascii', 'cp819',
+                  'ibm819', 'csisolatin1', 'iso-ir-100', 'windows-1252', 'cp1252', 'x-cp1252', 'ansi_x3.4-1968')
+
+
+def _text(data, sCharset):
+    """Bytes -> Text im Zeichensatz der Antwort: Content-Type, sonst <meta charset> im Kopf der Seite, sonst UTF-8 — so
+    liest es ein Browser, die Latin-1-Familie wie dort als windows-1252. Bis zum 02.11.2026 immer UTF-8: eine
+    iso-8859-1-Seite kam mit Ersatzzeichen statt Umlauten (lokal nachgestellt). Ein unbekannter
+    Name faellt auf UTF-8 zurueck."""
+    if not sCharset:
+        m = re.search(rb'<meta[^>]+charset=["\']?\s*([\w-]+)', data[:2048], re.I)
+        if m:
+            sCharset = m.group(1).decode('ascii', 'ignore')
+    if sCharset:
+        if sCharset.strip().lower() in _CP1252_LABELS:
+            sCharset = 'cp1252'
+        try:
+            return data.decode(sCharset, 'replace')
+        except LookupError:
+            pass
+    return data.decode('utf-8', 'replace')
+
+
+# Eine Cookie-Dose je Cookie-Datei fuer die Dauer des Aufrufs (= Prozess): Sitzungs-Cookies ohne Ablauf wandern so von
+# Antwort N zu Abruf N+1 desselben Klicks (in die Datei kommen sie nicht, save laesst discard-Cookies weg), und jeder
+# Abruf legt neue Cookies in DIESELBE Dose, die danach gespeichert wird. Bis zum 02.11.2026 hielt persistent_openers je
+# Domain den Opener des ersten Abrufs samt dessen Dose: Sitzungs-Cookies trug das implizit mit, aber ab dem zweiten
+# Abruf einer Domain landeten neue Cookies (auch die eines 302-Hops) nur dort — weder mitgeschickt noch gespeichert
+# (lokal nachgestellt). Die Datei wird vor jedem
+# Abruf nachgeladen, weil setCookie() und andere Prozesse (Dienst, zweiter Aufruf) sie schreiben.
+_cookieJars = {}
+_cookieJarsLock = threading.Lock()
+
+
+def _cookieJar(sPfad, bIgnoreDiscard, bIgnoreExpired):
+    with _cookieJarsLock:
+        oJar = _cookieJars.get(sPfad)
+        if oJar is None:
+            oJar = _cookieJars[sPfad] = LWPCookieJar(filename=sPfad)
+    try:
+        oJar.load(ignore_discard=bIgnoreDiscard, ignore_expires=bIgnoreExpired)
+    except Exception as e:
+        logger.debug(e)
+    return oJar
+
+
+# Die zwei SSL-Kontexte (mit und ohne Pruefung) einmal je Prozess: create_default_context liest die Zertifikate ein
+# (5-7 ms je Aufruf auf einem PC, auf einem Stick mehr) — bis zum 02.11.2026 geschah das ueber den gecachten Opener
+# nur beim ersten Abruf einer Domain, seit dem Wegfall von persistent_openers sonst bei jedem Abruf.
+_sslContexts = {}
+
+
+def _sslContext(bVerify):
+    oContext = _sslContexts.get(bVerify)
+    if oContext is None:
+        if bVerify:
+            oContext = ssl.create_default_context(cafile=certifi.where())
+            oContext.check_hostname = True
+            oContext.verify_mode = ssl.CERT_REQUIRED
         else:
-            ip_map[key] = previous
+            oContext = ssl.create_default_context()
+            oContext.check_hostname = False
+            oContext.verify_mode = ssl.CERT_NONE
+        _sslContexts[bVerify] = oContext
+    return oContext
 
 
 class _PinnedHTTPConnection(http.client.HTTPConnection):
@@ -145,13 +345,60 @@ class _PinnedHTTPSHandler(HTTPSHandler):
         return self.do_open(partial(_PinnedHTTPSConnection, ip=ip), req, context=self._context)
 
 
+def _vorStellen(dHeaders, sKey, aAnker):
+    """sKey direkt vor die erste vorhandene Zeile aus aAnker stellen: die Reihenfolge des Kopfzeilen-Dicts einer
+    urllib-Request ist die Sendefolge (Schluessel wie dort: erster Buchstabe gross)."""
+    for sAnker in aAnker:
+        if sAnker in dHeaders and sAnker != sKey:
+            aItems = [(k, v) for k, v in dHeaders.items() if k != sKey]
+            aItems.insert([k for k, _ in aItems].index(sAnker), (sKey, dHeaders[sKey]))
+            dHeaders.clear()
+            dHeaders.update(aItems)
+            return
+
+
 class RedirectFilter(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, hdrs, newurl):
         if cConfig().getSetting('bypassDNSlock', 'false') != 'true':
             if 'notice.cuii' in newurl:
-                xbmcgui.Dialog().ok(cConfig().getLocalizedString(30265), cConfig().getLocalizedString(30260) + '\n' + cConfig().getLocalizedString(30261))
+                # Die verweigerte Weiterleitung kommt in request() als HTTPError 3xx an; der Merker haelt dort das
+                # zweite Fenster („Fehler beim Abrufen der URL … HTTP Error 302") zurueck — gemeldet wird hier
+                # (26.10.2026 lokal provoziert: bis dahin zwei Fenster je Klick bei ausgeschalteter DNS-Umgehung)
+                _cuiiRefused.flag = True
+                if not _windowsQuiet():
+                    _markErrorShown()
+                    xbmcgui.Dialog().ok(cConfig().getLocalizedString(30265), cConfig().getLocalizedString(30260) + '\n' + cConfig().getLocalizedString(30261))
                 return None
-        return HTTPRedirectHandler.redirect_request(self, req, fp, code, msg, hdrs, newurl)
+        if code in (307, 308) and req.get_method() == 'POST':
+            # 307/308 auf einen POST: derselbe POST samt Rumpf und Content-Type am neuen Ort (RFC 9110, so folgen Browser).
+            # urllib kennt den Fall nicht und reicht die Antwort als HTTPError 307 durch — bis zum 02.11.2026 endete der
+            # Abruf damit mit einer Fehlermeldung (lokal nachgestellt). 301/302/303 bleiben bei urllib:
+            # weiter als GET ohne Rumpf, wie im Browser. Die Schleifen-Grenze (max_redirections) sitzt im Aufrufer.
+            newreq = Request(newurl.replace(' ', '%20'), data=req.data, headers=dict(req.headers),
+                             origin_req_host=req.origin_req_host, unverifiable=True, method='POST')
+        else:
+            newreq = HTTPRedirectHandler.redirect_request(self, req, fp, code, msg, hdrs, newurl)
+        if newreq is not None and browserProfiles.profileForUA(req.get_header('User-agent')):
+            # Firefox bildet Sec-Fetch-Site, Referer und Origin je Hop neu, urllib kopiert sie unveraendert
+            # (browserProfiles.redirectHop); fremde UAs (ohne Profil; bis zum 04.11.2026 die Vavoo-App) bleiben,
+            # wie urllib sie weiterreicht.
+            # Ein neuer Wert ersetzt die vorhandene Zeile an ihrer Stelle (add_header schreibt in dasselbe Dict).
+            # Bis zum 01.11.2026 loeschte der Filter sie vorher, die drei landeten so hinter Priority — Firefox 159
+            # laesst den Sec-Fetch-Block auf dem Hop zusammen (Mitschnitte Faelle 10, 13-20)
+            for key, value in browserProfiles.redirectHop(req.full_url, newreq.full_url, req.get_header('Referer'),
+                                                          req.get_header('Sec-fetch-site'), req.get_header('Origin'),
+                                                          req.get_header('Sec-fetch-mode') == 'cors',
+                                                          req.get_method() == 'POST',
+                                                          newreq.get_method() == 'POST').items():
+                if value is None:
+                    newreq.remove_header(key.capitalize())
+                else:
+                    newreq.add_header(key, value)
+            # Origin steht auf dem Hop VOR dem Referer (im ersten Abruf eines fetch() dahinter), ohne Referer vor
+            # Connection — auch wenn er erst hier dazukommt (Firefox 159 de, Faelle 13, 14, 16, 18, 20)
+            if 'Origin' in newreq.headers:
+                _vorStellen(newreq.headers, 'Origin', ('Referer', 'Connection'))
+        return newreq
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -161,14 +408,11 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 class cRequestHandler:
-    # useful for e.g. tmdb request where multiple requests are made within a loop
-    persistent_openers = {}
-
     @staticmethod
     def RandomUA():
         # Einstieg fuer alle Aufrufer (Sites, trailer.py, updateManager): der User-Agent
-        # eines zufaelligen Browser-Profils. Die Profile samt Kopfsaetzen und die
-        # Versionspflege stehen in browserProfiles.py.
+        # des Browser-Profils (seit dem 14.10.2026 genau eines, Firefox auf Windows). Profil,
+        # Kopfsaetze und Versionspflege stehen in browserProfiles.py.
         return browserProfiles.randomUA()
 
     def __init__(self, sUrl, caching=True, ignoreErrors=False, method='GET', data=None, compression=True, jspost=False, ssl_verify=False, cookies=True):
@@ -194,15 +438,18 @@ class cRequestHandler:
         self.compression = compression
         self.jspost = jspost
         # cookies=False: sitzungslose Anfrage. Es wird kein Cookie mitgeschickt und
-        # keines gespeichert; der Opener kommt ohne Cookie-Verarbeitung und landet
-        # nicht in persistent_openers. Zweck: parallele Folgeseiten einer Suche.
-        # DLE-Seiten binden die Sitzung an ein PHPSESSID-Cookie, und PHP sperrt
-        # die Sitzung je Anfrage — parallele Abrufe mit demselben Cookie werden
-        # serverseitig NACHEINANDER abgearbeitet (kkiste: vier Seiten 5,3 s mit,
-        # 2,1 s ohne Cookie; hdfilme 4,1 s gegen 1,6 s, gemessen 02.09.2026).
+        # keines gespeichert; der Opener kommt ohne Cookie-Verarbeitung. Gebaut fuer
+        # parallele Abrufe gegen DLE-Seiten:
+        # die binden die Sitzung an ein PHPSESSID-Cookie, und PHP sperrt die Sitzung
+        # je Anfrage — parallele Abrufe mit demselben Cookie werden serverseitig
+        # NACHEINANDER abgearbeitet (kkiste: vier Seiten 5,3 s mit, 2,1 s ohne Cookie;
+        # hdfilme 4,1 s gegen 1,6 s, gemessen 02.09.2026). Seit die Suche nur noch eine
+        # Ergebnisseite je Aufruf holt (21.10.2026), hat der Schalter keinen Aufrufer;
+        # er bleibt als Option fuer den naechsten parallelen Abruf.
         self.cookies = cookies
         self.cacheTime = int(cConfig().getSetting('cacheTime', 1)) * 3600  # Stunden * 3600 = Sekunden
         self.requestTimeout = int(cConfig().getSetting('requestTimeout', 10))
+        self._iRumpfFrist = max(RUMPF_MINDESTFRIST, RUMPF_FAKTOR * self.requestTimeout)
         self.bypassDNSlock = (cConfig().getSetting('bypassDNSlock', 'false') == 'true')
         self.removeBreakLines(True)
         self.removeNewLines(True)
@@ -217,6 +464,14 @@ class cRequestHandler:
 
     def getStatus(self):
         return self._Status
+
+    def _errorWindow(self, sText):
+        # Fehlerfenster des Handlers (4xx/5xx, URLError, HTTPException, OSError): nicht bei stillen Abrufen
+        # (ignoreErrors) und nicht im Hosterlink-Schritt (quietWindows, oben) — dann bleibt nur die Logzeile
+        if self.ignoreErrors or _windowsQuiet():
+            return
+        _markErrorShown()
+        xbmcgui.Dialog().ok('xStream', sText)
 
     def getProtection(self):
         """'cf' bei einer Cloudflare-Sperre, 'ddos' bei DDoS-Guard, sonst ''.
@@ -260,10 +515,6 @@ class cRequestHandler:
     def addHeaderEntry(self, sHeaderKey, sHeaderValue):
         self._headerEntries[sHeaderKey] = sHeaderValue
 
-    def getHeaderEntry(self, sHeaderKey):
-        if sHeaderKey in self._headerEntries:
-            return self._headerEntries[sHeaderKey]
-
     def addParameters(self, key, value, Quote=False):
         self._aParameters[key] = value if not Quote else quote(str(value))
 
@@ -285,8 +536,9 @@ class cRequestHandler:
 
     def __legacyHeaders(self, sUA):
         # Der Kopfsatz von vor den Browser-Profilen, unveraendert: gilt fuer jeden UA,
-        # der zu keinem Profil gehoert (die Vavoo-App-UAs), damit sich dort nichts
-        # bewegt. Firefox-typische Zeilen, dazu Keep-Alive, das kein Browser sendet.
+        # der zu keinem Profil gehoert (bis zum 04.11.2026 die Vavoo-App-UAs; seitdem
+        # setzt kein Modul mehr einen eigenen), damit sich dort nichts bewegt.
+        # Firefox-typische Zeilen, dazu Keep-Alive, das kein Browser sendet.
         aHeaders = [('User-Agent', sUA),
                     ('Accept-Language', 'de,en-US;q=0.7,en;q=0.3'),
                     ('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8')]
@@ -295,15 +547,19 @@ class cRequestHandler:
         aHeaders += [('Connection', 'keep-alive'), ('Keep-Alive', 'timeout=5')]
         return aHeaders
 
-    def __buildHeaders(self):
+    def __buildHeaders(self, bPost=False):
         """Der Kopfsatz, der wirklich auf die Leitung geht — als geordnete Liste.
 
         Grundlage ist das Browser-Profil zu dem UA, der JETZT gesetzt ist (Default
         oder von der Site ueberschrieben). Den Modus bestimmt der Aufruf: requestJson(),
         X-Requested-With, jspost oder ein JSON-Rumpf heissen "fetch() der Seite",
-        alles andere ist ein Seitenaufruf; Sec-Fetch-Site ergibt sich aus dem Referer.
+        alles andere ist ein Seitenaufruf; Sec-Fetch-Site ergibt sich aus dem Referer,
+        bei einem POST (bPost, wie urllib ihn sendet) ohne Referer same-origin statt none,
+        und ein POST bekommt Origin.
         Was die Site selbst gesetzt hat, gewinnt — unabhaengig von der Schreibweise
-        (burningseries setzt seine Namen klein), neue Zeilen kommen hinten dran.
+        (burningseries setzt seine Namen klein), neue Zeilen kommen hinten dran. Ausnahme
+        Referer: der Wert der Site ist die Adresse der ausloesenden Seite, hinaus geht, was
+        das Profil daraus macht (an fremde Urspruenge nur der Ursprung, seit 01.11.2026).
         """
         aSite = list(self._headerEntries.items())
         sUA = self._USER_AGENT
@@ -319,8 +575,8 @@ class cRequestHandler:
                 sReferer = value
             elif sKey == 'x-requested-with' or (sKey == 'content-type' and 'json' in value.lower()):
                 sMode = browserProfiles.MODE_API
-        self._USER_AGENT = sUA  # DDoS-Guard- und Blazingfast-Weg nehmen denselben UA
-        aHeaders = browserProfiles.buildHeaders(sUA, self._sUrl, sReferer, sMode, self.compression)
+        aHeaders = browserProfiles.buildHeaders(sUA, self._sUrl, sReferer, sMode, self.compression, bPost)
+        bProfile = aHeaders is not None
         if aHeaders is None:
             aHeaders = self.__legacyHeaders(sUA)
         aOut = []
@@ -330,6 +586,8 @@ class cRequestHandler:
             aOut.append([key, value])
         for key, value in aSite:
             sKey = key.lower()
+            if bProfile and sKey == 'referer':
+                continue  # schon im Profil-Satz, gekuerzt wie bei Firefox (oder weggelassen, https nach http)
             if sKey in dIndex:
                 aOut[dIndex[sKey]][1] = value
             else:
@@ -339,16 +597,7 @@ class cRequestHandler:
 
     @staticmethod
     def __getDefaultHandler(ssl_verify):
-        if ssl_verify:
-            ssl_context = ssl.create_default_context(cafile=certifi.where())
-            ssl_context.check_hostname = True
-            ssl_context.verify_mode = ssl.CERT_REQUIRED
-            return [_PinnedHTTPSHandler(context=ssl_context)]
-        else:
-            ssl_context = ssl.create_default_context()
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
-            return [_PinnedHTTPSHandler(context=ssl_context)]
+        return [_PinnedHTTPSHandler(context=_sslContext(bool(ssl_verify)))]
 
     @staticmethod
     def __cleanupUrl(url):
@@ -366,31 +615,18 @@ class cRequestHandler:
         else:
             logger.info('-> [requestHandler]: read html for %s' % self.getRequestUri())
 
-        # DNS-Bypass global ueber Setting (kein per-Site-Flag mehr)
-        if self.bypassDNSlock:
-            ip_override = self.__doh_request(self._sUrl)
-        else:
-            ip_override = None
-        _doh_host = urlparse(self._sUrl).hostname
+        # DNS-Bypass global ueber Setting (kein per-Site-Flag mehr): jeder Host des Abrufs, auch hinter einer
+        # Weiterleitung, wird bei der ersten Verbindung per DoH aufgeloest (_dohPin)
+        _doh_resolver = self.__dohHost if self.bypassDNSlock else None
 
-        cookieJar = LWPCookieJar(filename=self._cookiePath)
-        try:
-            cookieJar.load(ignore_discard=self.__bIgnoreDiscard, ignore_expires=self.__bIgnoreExpired)
-        except Exception as e:
-            logger.debug(e)
-        
-        domain = urlparse(self._sUrl).netloc
-        if not self.cookies:
-            handlers = self.__getDefaultHandler(self._ssl_verify)
-            handlers += [_PinnedHTTPHandler(), RedirectFilter()]
-            opener = build_opener(*handlers)
-        elif domain in cRequestHandler.persistent_openers:
-            opener = cRequestHandler.persistent_openers[domain]
-        else:
-            handlers = self.__getDefaultHandler(self._ssl_verify)        
-            handlers += [_PinnedHTTPHandler(), HTTPCookieProcessor(cookiejar=cookieJar), RedirectFilter()]
-            opener = build_opener(*handlers)
-            cRequestHandler.persistent_openers[domain] = opener
+        cookieJar = _cookieJar(self._cookiePath, self.__bIgnoreDiscard, self.__bIgnoreExpired)
+
+        # Ein Opener je Abruf mit der Cookie-Dose der Domain (_cookieJar, oben), die unten gespeichert wird. Einen
+        # Opener wiederzuverwenden spart nichts: urllib schliesst jede Verbindung nach der Antwort (Connection: close).
+        handlers = self.__getDefaultHandler(self._ssl_verify) + [_PinnedHTTPHandler()]
+        if self.cookies:
+            handlers.append(HTTPCookieProcessor(cookiejar=cookieJar))
+        opener = build_opener(*(handlers + [RedirectFilter()]))
 
         if self.method == 'POST':
             if self.data is not None:
@@ -408,43 +644,57 @@ class cRequestHandler:
             if len(sParameters) == 0:
                 sParameters = None
         
-        oRequest = Request(self._sUrl, sParameters if sParameters and len(sParameters) > 0 else None)
+        try:
+            oRequest = Request(self._sUrl, sParameters if sParameters and len(sParameters) > 0 else None)
+        except ValueError as e:
+            # Adresse ohne Schema (unknown url type) u. ae.: Meldung wie bei einem Verbindungsfehler statt
+            # Skriptfehler (02.11.2026 nachgestellt)
+            self._errorWindow(str(e))
+            logger.error(' -> [requestHandler]: ungueltige Adresse: ' + str(e))
+            return ERR_URL
 
-        for key, value in self.__buildHeaders():
+        for key, value in self.__buildHeaders(oRequest.get_method() == 'POST'):
             oRequest.add_header(key, value)
         
-        if self.method == 'POST' and 'Content-Type' not in self._headerEntries:
-            oRequest.add_header('Content-Type', 'application/x-www-form-urlencoded')
-        elif self.jspost:
-            oRequest.add_header('Content-Type', 'application/json')
+        # Content-Type nur mit Rumpf: ohne Daten schickt urllib ein GET, das bis zum 01.11.2026 trotzdem einen bekam
+        # (method='POST' ohne data, jspost ohne Parameter — kein Aufrufer, aber ein GET mit Content-Type gibt es im Browser nicht)
+        if oRequest.data is not None:
+            if self.method == 'POST' and 'Content-Type' not in self._headerEntries:
+                oRequest.add_header('Content-Type', 'application/x-www-form-urlencoded')
+            elif self.jspost:
+                oRequest.add_header('Content-Type', 'application/json')
         
         if self.cookies:
             cookieJar.add_cookie_header(oRequest)
         
         try:
-            with _doh_resolution(_doh_host, ip_override):
+            with _doh_resolution(None, None, _doh_resolver):
                 oResponse = opener.open(oRequest)
             # Auch das LESEN der Antwort gehoert in den Schutz: stockt der Body (Lese-Timeout)
             # oder bricht die Verbindung mittendrin ab (IncompleteRead, Reset), greifen dieselben
-            # Zweige wie beim Verbindungsaufbau. Belegt im Audit 04.09.2026: 9 von ~9.200 Klicks
+            # Zweige wie beim Verbindungsaufbau. Belegt 04.09.2026: 9 von ~9.200 Klicks
             # endeten so als Skriptfehler, weil read() bis dahin hinter dem try stand.
             self._sResponseHeader = oResponse.info()
             content_encoding = self._sResponseHeader.get('Content-Encoding', '').lower()
-            if content_encoding:
-                raw_content = oResponse.read()
-                if content_encoding == 'gzip':
-                    decompressed = zlib.decompress(raw_content, wbits=zlib.MAX_WBITS | 16)
-                elif content_encoding == 'deflate':
-                    decompressed = zlib.decompress(raw_content, wbits=-zlib.MAX_WBITS)
-                else:
-                    decompressed = raw_content
-                sContent = decompressed.decode('utf-8', 'replace')
-            else:
-                sContent = oResponse.read().decode('utf-8', 'replace')
+            sContent = _text(_entpacke(_rumpf(oResponse, self._iRumpfFrist), content_encoding, self._sUrl, bStreng=True),
+                             self._sResponseHeader.get_content_charset())
         except HTTPError as e:
             if e.code >= 400:
                 self._Status = str(e.code)
-                data = e.fp.read()
+                # Auch das Lesen der Fehlerseite kann stocken oder abbrechen — dann reicht der Status fuer die
+                # Meldung. Bis zum 02.11.2026 flog ein Lese-Timeout hier als Skriptfehler heraus, weil er im
+                # except-Zweig selbst entstand (nachgestellt: 503 mit stockendem Rumpf)
+                try:
+                    data = _rumpf(e.fp, self._iRumpfFrist)
+                except (OSError, HTTPException):
+                    data = b''
+                # Auch eine Fehlerseite kommt gepackt, wenn der Server gzip/deflate nutzt — unser
+                # Accept-Encoding gilt fuer jede Antwort (kinoger-404 und Cloudflare-Challenges
+                # kamen gzip, gemessen 22.10.2026). Bis dahin liefen die Marker unten und die
+                # Logzeile auf den gepackten Bytes: eine gepackte DDoS-Guard-Seite hiess „nicht
+                # erreichbar", im Log stand Binaermuell. Entpackt wird wie im Erfolgszweig; eine
+                # kaputte Huelle bleibt roh, damit der Fehlerweg selbst nie wirft.
+                data = _entpacke(data, (e.headers.get('Content-Encoding') or '').lower(), self._sUrl)
                 # ERKENNUNG DER SCHUTZSYSTEME — Merkmale statt Namensraten.
                 # Frueher galt JEDER 4xx als Cloudflare-Sperre, sobald irgendwo in den
                 # Headern das Wort "cloudflare" stand. Bei einer Seite hinter Cloudflare
@@ -453,58 +703,44 @@ class cRequestHandler:
                 # am 25.08.: 10 von 18 Seiten, jede tote Adresse wurde dem Nutzer als
                 # Sperre gemeldet. Merkmal ist deshalb `cf-mitigated`: den Header setzt
                 # Cloudflare nur, wenn es tatsaechlich eingegriffen hat (hdfilme:
-                # 403 + cf-mitigated: challenge; alle gemessenen 404 ohne).
-                # DDoS-Guard wiederum wurde NIE erkannt: geprueft wurde auf 'DDOS-GUARD'
-                # in Grossbuchstaben, die Sperrseite schreibt aber 'DDoS-Guard'. Der
-                # server-Header ist hier das verlaessliche Merkmal (aniworld:
-                # 403 + server: ddos-guard).
+                # 403 + cf-mitigated: challenge; alle gemessenen 404 ohne). Ersatzmerkmal
+                # im Body ('just a moment' = Titel, 'cf_chl' = Kennung im Challenge-Skript
+                # der Cloudflare-Seite; 25.08.2026), nur bei 403/503.
+                # DDoS-Guard genauso: bis zum 09.10.2026 reichte der Header
+                # `server: ddos-guard` — den traegt aber jede Antwort einer Seite
+                # dahinter, auch eine normale 404 (tote Serie) oder ein 502, und die
+                # bekamen so faelschlich die Sperrmeldung. Merkmal ist die Pruefseite
+                # selbst (DDOS_GUARD_MARKERS), wie bei Cloudflare nur bei 403/503.
                 sBody = str(data).lower()
-                sServer = (e.headers.get('server') or '').lower()
                 aHeaderNames = set(k.lower() for k in e.headers.keys())
-                isDdosGuard = 'ddos-guard' in sServer or 'ddos-guard' in sBody
+                isDdosGuard = e.code in (403, 503) and any(m in sBody for m in DDOS_GUARD_MARKERS)
                 isCloudflare = ('cf-mitigated' in aHeaderNames
                                 or (e.code in (403, 503) and ('just a moment' in sBody or 'cf_chl' in sBody)))
                 self._Protection = 'ddos' if isDdosGuard else ('cf' if isCloudflare else '')
                 if isDdosGuard:
-                    # Der Bypass lief wegen der Gross-/Kleinschreibung oben noch nie.
-                    # Deshalb mit Netz: scheitert er, gibt es die Meldung statt eines
-                    # Absturzes mitten im Abruf.
-                    try:
-                        opener = build_opener(HTTPCookieProcessor(cookieJar))
-                        opener.addheaders = [('User-agent', self._USER_AGENT), ('Referer', self._sUrl)]
-                        response = opener.open('https://check.ddos-guard.net/check.js')
-                        content = response.read().decode('utf-8', 'replace')
-                        url2 = re.findall("Image.*?'([^']+)'; new", content)
-                        if not url2:
-                            raise ValueError('kein Check-Pfad in check.js')
-                        url3 = urlparse(self._sUrl)
-                        url3 = '%s://%s/%s' % (url3.scheme, url3.netloc, url2[0])
-                        opener = build_opener(HTTPCookieProcessor(cookieJar))
-                        opener.addheaders = [('User-agent', self._USER_AGENT), ('Referer', self._sUrl)]
-                        opener.open(url3).read()
-                        opener = build_opener(HTTPCookieProcessor(cookieJar))
-                        opener.addheaders = [('User-agent', self._USER_AGENT), ('Referer', self._sUrl)]
-                        oResponse = opener.open(self._sUrl, sParameters if sParameters else None)
-                    except Exception as ddosError:
-                        oResponse = None
-                        logger.error(' -> [requestHandler]: DDoS-Guard bypass failed (%s) Url: %s' % (ddosError, self._sUrl))
-                    if not oResponse:
-                        if not self.ignoreErrors:
-                            infoDialog(cConfig().getLocalizedString(30875), icon='WARNING', time=10000)
-                        logger.error(' -> [requestHandler]: Failed DDoS-Guard active: ' + self._sUrl)
-                        return ERR_DDOS
+                    # Bewusst KEIN Umgehungsversuch mehr (raus seit dem 06.10.2026):
+                    # der alte Weg ueber check.ddos-guard.net scheiterte dort fast immer
+                    # an einem 403, und kam er doch durch, las er die Antwort nicht und
+                    # brach mit einem Skriptfehler ab. Am Geraet sperrt DDoS-Guard
+                    # nicht einmal ueber VPN. Die Erkennung oben bleibt: Meldung,
+                    # Rueckgabe und der Status fuer den Domain-Check (getProtection).
+                    if not self.ignoreErrors:
+                        _markErrorShown()
+                        infoDialog(cConfig().getLocalizedString(30875), icon='WARNING', time=10000)
+                    logger.error(' -> [requestHandler]: Failed DDoS-Guard active: ' + self._sUrl)
+                    return ERR_DDOS
                 elif isCloudflare:
                     if not self.ignoreErrors:
+                        _markErrorShown()
                         infoDialog(cConfig().getLocalizedString(30829), icon='WARNING', time=10000)
                     logger.error(' -> [requestHandler]: Failed Cloudflare active: ' + self._sUrl)
                     return ERR_CLOUDFLARE
                 else:
-                    if not self.ignoreErrors:
-                        xbmcgui.Dialog().ok('xStream', cConfig().getLocalizedString(30259) + ' {0} {1}'.format(self._sUrl, str(e)))
+                    self._errorWindow(cConfig().getLocalizedString(30259) + ' {0} {1}'.format(self._sUrl, str(e)))
                     # Den Fehlertext des Servers mitschreiben: er steht ohnehin schon in
                     # `data` und beantwortet oft direkt, WAS er beanstandet hat. Aus der
                     # blossen Statuszahl war das nicht zu erkennen - am 31.08.2026 kam
-                    # von vavoo.to minutenlang ein 400, und erst der Body verriet
+                    # von der Vavoo-API minutenlang ein 400, und erst der Body verriet
                     # {"error":"Validation error"}. Gekuerzt und einzeilig, damit eine
                     # HTML-Fehlerseite das Log nicht flutet.
                     sErrorBody = ''
@@ -516,8 +752,12 @@ class cRequestHandler:
                                  + ((' Body: ' + sErrorBody) if sErrorBody else ''))
                     return ERR_UNREACHABLE
             else:
-                if not self.ignoreErrors:
-                    xbmcgui.Dialog().ok('xStream', cConfig().getLocalizedString(30259) + ' {0} {1}'.format(self._sUrl, str(e)))
+                # Ein 3xx landet nur hier, wenn RedirectFilter die Weiterleitung verweigert hat (CUII-Sperre, dort
+                # schon gemeldet) oder urllib eine Weiterleitungsschleife abbricht — ein Fenster nur im zweiten Fall
+                if getattr(_cuiiRefused, 'flag', False):
+                    _cuiiRefused.flag = False
+                else:
+                    self._errorWindow(cConfig().getLocalizedString(30259) + ' {0} {1}'.format(self._sUrl, str(e)))
                 logger.error(' -> [requestHandler]: HTTPError ' + str(e) + ' Url: ' + self._sUrl)
                 return ERR_UNREACHABLE
         except (socket.timeout, TimeoutError):
@@ -526,10 +766,12 @@ class cRequestHandler:
             # damit durch URLError/HTTPException hindurch — vorher flog der Fall als
             # unbehandelte Exception aus request() heraus und Kodi zeigte einen
             # Skriptfehler. Status -1 (kein gueltiger HTTP-Code) heisst fuer den
-            # Domain-Check: langsam, aber nicht tot.
+            # Domain-Check: langsam, aber nicht tot — die Domain bleibt stehen, die
+            # globale Suche ruht bis zur Nachpruefung des Service (pluginHandler).
             self._Status = '-1'
             if not self.ignoreErrors:
-                # Als Einblendung statt als Fenster (Jacks Entscheidung 25.08.): ein
+                _markErrorShown()
+                # Als Einblendung statt als Fenster (so entschieden am 25.08.): ein
                 # Timeout trifft bei einer langsamen Seite gleich mehrere Abrufe
                 # hintereinander — ein Fenster je Abruf wuerde die Oberflaeche
                 # blockieren. Im Menue steht die Seite ausserdem als "Timeout", und die
@@ -549,28 +791,24 @@ class cRequestHandler:
             reason = getattr(e, 'reason', None)
             if isinstance(reason, socket.gaierror) and reason.errno in (-2, 11001):
                 self._Status = '-5'
-            if not self.ignoreErrors:
-                xbmcgui.Dialog().ok('xStream', str(e.reason))
+            self._errorWindow(str(e.reason))
             logger.error(' -> [requestHandler]: URLError ' + str(e.reason) + ' Url: ' + self._sUrl)
             return ERR_URL
         except HTTPException as e:
-            if not self.ignoreErrors:
-                xbmcgui.Dialog().ok('xStream', str(e))
+            self._errorWindow(str(e))
             logger.error(' -> [requestHandler]: HTTPException ' + str(e) + ' Url: ' + self._sUrl)
             return ERR_TIMEOUT
         except OSError as e:
             # Verbindung waehrend des Lesens weg (Reset, EOF) — kein URLError, sonst ungefangen
-            if not self.ignoreErrors:
-                xbmcgui.Dialog().ok('xStream', str(e))
+            self._errorWindow(str(e))
             logger.error(' -> [requestHandler]: OSError ' + str(e) + ' Url: ' + self._sUrl)
             return ERR_URL
-
-        if 'lazingfast' in sContent:
-            bf = cBF().resolve(self._sUrl, sContent, cookieJar, self._USER_AGENT, sParameters)
-            if bf:
-                sContent = bf
-            else:
-                logger.error(' -> [requestHandler]: Failed Blazingfast active: ' + self._sUrl)
+        except ValueError as e:
+            # Nicht-ASCII in Pfad oder Kopfzeile (UnicodeEncodeError beim Senden): Meldung statt Skriptfehler
+            # (02.11.2026 nachgestellt)
+            self._errorWindow(str(e))
+            logger.error(' -> [requestHandler]: ungueltige Anfrage ' + str(e) + ' Url: ' + self._sUrl)
+            return ERR_URL
 
         if self.cookies:
             try:
@@ -579,7 +817,9 @@ class cRequestHandler:
                 logger.error(' -> [requestHandler]: Failed save cookie: %s' % e)
 
         self._sRealUrl = oResponse.geturl()
-        self._Status = oResponse.getcode() if self._sUrl == self._sRealUrl else '301'
+        # Immer Text wie in allen anderen Zweigen (Cache-Treffer '200', Fehler '404', '-1') — bis zum 02.11.2026
+        # kam hier die Zahl aus getcode(), und Aufrufer mussten selbst umwandeln
+        self._Status = str(oResponse.getcode()) if self._sUrl == self._sRealUrl else '301'
 
         if self.__bRemoveNewLines:
             sContent = sContent.replace('\n', '').replace('\r\t', '')
@@ -601,19 +841,10 @@ class cRequestHandler:
         # loest den CF-Block aus. Das Redirect-Ziel liefert die Quell-Seite (URL_MAIN)
         # selbst aus, die Embed-Seite wird hier gar nicht kontaktiert; ResolveURL holt die
         # Seite spaeter mit eigener Logik. Nutzt bewusst dieselbe DoH/Cookie/UA-Basis
-        # wie request(), aber KEINE persistent_openers (No-Follow darf den Cache nicht
-        # verseuchen, sonst wuerden normale Requests derselben Domain nicht mehr folgen).
-        if self.bypassDNSlock:
-            ip_override = self.__doh_request(self._sUrl)
-        else:
-            ip_override = None
-        _doh_host = urlparse(self._sUrl).hostname
+        # wie request(), mit eigenem Opener, der Weiterleitungen nicht folgt.
+        _doh_resolver = self.__dohHost if self.bypassDNSlock else None
 
-        cookieJar = LWPCookieJar(filename=self._cookiePath)
-        try:
-            cookieJar.load(ignore_discard=self.__bIgnoreDiscard, ignore_expires=self.__bIgnoreExpired)
-        except Exception as e:
-            logger.debug(e)
+        cookieJar = _cookieJar(self._cookiePath, self.__bIgnoreDiscard, self.__bIgnoreExpired)
 
         handlers = self.__getDefaultHandler(self._ssl_verify)
         handlers += [_PinnedHTTPHandler(), HTTPCookieProcessor(cookiejar=cookieJar), _NoRedirect()]
@@ -631,16 +862,15 @@ class cRequestHandler:
             else:
                 sParameters = self.data
 
-        oRequest = Request(self._sUrl, sParameters)
-        for key, value in self.__buildHeaders():
-            oRequest.add_header(key, value)
-        if sParameters and 'Content-Type' not in self._headerEntries:
-            oRequest.add_header('Content-Type', 'application/x-www-form-urlencoded')
-        cookieJar.add_cookie_header(oRequest)
-
         sLocation = ''
         try:
-            with _doh_resolution(_doh_host, ip_override):
+            oRequest = Request(self._sUrl, sParameters)
+            for key, value in self.__buildHeaders(oRequest.get_method() == 'POST'):
+                oRequest.add_header(key, value)
+            if sParameters and 'Content-Type' not in self._headerEntries:
+                oRequest.add_header('Content-Type', 'application/x-www-form-urlencoded')
+            cookieJar.add_cookie_header(oRequest)
+            with _doh_resolution(None, None, _doh_resolver):
                 oResponse = opener.open(oRequest)
             sLocation = oResponse.geturl()  # kein Redirect gekommen (z.B. direkt 200) -> finale URL
         except HTTPError as e:
@@ -648,7 +878,9 @@ class cRequestHandler:
                 sLocation = e.headers.get('Location', '')
             else:
                 logger.error(' -> [requestHandler]: getRedirectUrl HTTPError %s Url: %s' % (str(e), self._sUrl))
-        except (URLError, HTTPException) as e:
+        except (URLError, HTTPException, OSError, ValueError) as e:
+            # OSError: Lese-Timeout oder Reset vor der Antwort — bis zum 02.11.2026 flogen beide als Skriptfehler
+            # heraus (nachgestellt); ValueError: ungueltige Adresse
             logger.error(' -> [requestHandler]: getRedirectUrl Fehler %s Url: %s' % (str(e), self._sUrl))
 
         if sLocation:
@@ -658,33 +890,32 @@ class cRequestHandler:
     def __setCookiePath(self):
         cookieFile = os.path.join(self._profilePath, 'cookies')
         if not os.path.exists(cookieFile):
-            os.makedirs(cookieFile)
+            # exist_ok: der Domain-Check legt je Site einen Thread an, und auf einem
+            # frischen Profil sehen mehrere Threads gleichzeitig "Ordner fehlt" — der
+            # zweite flog hier mit FileExistsError raus, seine Site stand danach bis
+            # zum Kodi-Neustart auf "Unbekannter Fehler" ohne globale Suche (06.10.2026,
+            # 16 von 30 Laeufen). Die Pruefung davor bleibt, damit ein
+            # kaputtes Profil (Datei statt Ordner) sich verhaelt wie bisher.
+            os.makedirs(cookieFile, exist_ok=True)
         if 'dummy' not in self._sUrl:
-            cookieFile = os.path.join(cookieFile, urlparse(self._sUrl).netloc.replace('.', '_') + '.txt')
+            # Der Dateiname kommt aus der Adresse der Gegenseite — nur Buchstaben, Ziffern,
+            # Bindestrich und Unterstrich bleiben, alles andere wird '_' (Regel: Fremddaten
+            # nie ungefiltert in Dateipfade). Fuer normale Hosts ist das derselbe Name wie
+            # bisher (nur '.' -> '_'); ein Host mit Port (Live-TV-Edges IP:8008) hiess bis
+            # zum 22.10.2026 „…:8008.txt" — unter Windows ein Datenstrom, auf FAT unzulaessig.
+            sNetloc = ''.join(c if (c.isascii() and c.isalnum()) or c in '-_' else '_' for c in urlparse(self._sUrl).netloc)
+            cookieFile = os.path.join(cookieFile, sNetloc + '.txt')
             if not os.path.exists(cookieFile):
                 open(cookieFile, 'w').close()
             self._cookiePath = cookieFile
 
-    def getCookie(self, sCookieName, sDomain=''):
-        cookieJar = LWPCookieJar()
-        try:
-            cookieJar.load(self._cookiePath, self.__bIgnoreDiscard, self.__bIgnoreExpired)
-        except Exception as e:
-            logger.error(e)
-        for entry in cookieJar:
-            if entry.name == sCookieName:
-                if sDomain == '':
-                    return entry
-                elif entry.domain == sDomain:
-                    return entry
-        return False
-
     def setCookie(self, oCookie):
-        cookieJar = LWPCookieJar()
+        # in die Dose der Domain (_cookieJar), damit der naechste Abruf desselben Aufrufs das Cookie auch dann traegt,
+        # wenn es ein Sitzungs-Cookie ist, das die Datei nicht aufnimmt
         try:
-            cookieJar.load(self._cookiePath, self.__bIgnoreDiscard, self.__bIgnoreExpired)
+            cookieJar = _cookieJar(self._cookiePath, self.__bIgnoreDiscard, self.__bIgnoreExpired)
             cookieJar.set_cookie(oCookie)
-            cookieJar.save(self._cookiePath, self.__bIgnoreDiscard, self.__bIgnoreExpired)
+            cookieJar.save(ignore_discard=self.__bIgnoreDiscard, ignore_expires=self.__bIgnoreExpired)
         except Exception as e:
             logger.error(e)
 
@@ -694,9 +925,25 @@ class cRequestHandler:
     def ignoreExpired(self, bIgnoreExpired):
         self.__bIgnoreExpired = bIgnoreExpired
 
+    def __dohHost(self, hostname):
+        # Resolver fuer _dohPin: Hostname (ohne Port) -> IP per DoH oder None
+        try:
+            return self.__doh_request('https://%s/' % hostname)
+        except ValueError:
+            return None
+
     def __doh_request(self, url, doh_server="https://cloudflare-dns.com/dns-query"):
         parsed_url = urlparse(url)
         hostname = parsed_url.hostname
+        # Eine IP-Adresse als Host (Live-TV-Edges auf Port 8008) hat nichts aufzuloesen:
+        # die DoH-Abfrage dafuer kam als NXDOMAIN zurueck — je Senderstart eine Logzeile
+        # „Invalid DNS response" und 0,1 bis 0,6 s Wartezeit (gemessen 22.10.2026). Ohne
+        # Pin verbindet die Stdlib direkt zur IP, genau wie bei abgeschaltetem Bypass.
+        try:
+            ipaddress.ip_address(hostname)
+            return None
+        except ValueError:
+            pass
         # Bewusst NICHT gecacht: DDoS-Guard-Edges rotieren, eine im RAM-Cache
         # festgehaltene IP koennte innerhalb der TTL sterben -> immer frisch aufloesen.
         params = urlencode({"name": hostname, "type": "A"})
@@ -723,7 +970,7 @@ class cRequestHandler:
     def __setCachePath(self):
         cache = os.path.join(self._profilePath, 'htmlcache')
         if not os.path.exists(cache):
-            os.makedirs(cache)
+            os.makedirs(cache, exist_ok=True)  # gleiches Rennen wie bei cookies/, siehe __setCookiePath
         self._cachePath = cache
 
     def __readPersistentCache(self, url):
@@ -752,12 +999,24 @@ class cRequestHandler:
         return None
 
     def __writePersistentCache(self, url, content):
+        # Erst in eine eigene Datei, dann umbenennen: ein gleichzeitiger Leser (zweiter Aufruf, Widget, Thread)
+        # sieht nie eine halbe Seite. Bis zum 02.11.2026 schrieb der Handler direkt in die Cache-Datei — nachgestellt
+        # lasen drei Leser neben einem Schreiber 1.112 von 59.980 Mal eine halbe Seite.
+        sTmp = ''
         try:
             h = hashlib.md5(url.encode('utf8')).hexdigest()
-            with open(os.path.join(self._cachePath, h), 'wb') as f:
+            sPfad = os.path.join(self._cachePath, h)
+            sTmp = '%s.%d.%d.tmp' % (sPfad, os.getpid(), threading.get_ident())
+            with open(sTmp, 'wb') as f:
                 f.write(content.encode('utf8'))
+            os.replace(sTmp, sPfad)
         except Exception:
             logger.error(' -> [requestHandler]: Could not write Cache')
+            if sTmp:
+                try:
+                    os.remove(sTmp)
+                except OSError:
+                    pass
 
     def __writeVolatileCache(self, url, content):
         self._memCache.set(hashlib.md5(url.encode('utf8')).hexdigest(), content)
@@ -800,16 +1059,15 @@ class cRequestHandler:
     def clearCache(self, silent=False):
         if self.isMemoryCacheActive:
             self._memCache.clear()
-        cRequestHandler.persistent_openers.clear()
-        
+
         # Persistenten Cache aufraeumen: NUR abgelaufene Dateien loeschen.
         # Der Lesepfad prueft ohnehin `0 < fileAge < cacheTime`, abgelaufene Eintraege
         # werden also nie benutzt — der Wisch dient allein dem Plattenplatz. Frische
-        # Dateien zu behalten spart nach dem taeglichen Aufraeumen den kompletten
-        # Kaltstart: sonst muss jeder erste Aufruf des Tages ins Netz.
-        # Grenze = das Maximum aus der Nutzereinstellung und den 48 Stunden, die
-        # einzelne Site-Plugins setzen. Aelteres kann nie mehr ein Treffer sein.
-        maxAge = max(int(cConfig().getSetting('cacheTime', 12)), 48) * 3600
+        # Dateien zu behalten spart nach dem Aufraeumen den kompletten Kaltstart:
+        # sonst muss jeder erste Aufruf des Tages ins Netz. Grenze = die Einstellung
+        # „HTML Cache in Stunden" (seit dem 05.11.2026 setzt keine Seite mehr eigene
+        # Stunden). Aelteres kann nie mehr ein Treffer sein.
+        maxAge = int(cConfig().getSetting('cacheTime', 1)) * 3600
         cutoff = time.time() - maxAge
         removed = 0
         try:
@@ -825,45 +1083,3 @@ class cRequestHandler:
         logger.info(' -> [requestHandler]: cache cleanup, %d abgelaufene Dateien entfernt' % removed)
         if not silent and removed:
             infoDialog(cConfig().getLocalizedString(30405), icon='INFO')
-
-
-class cBF:
-    def resolve(self, url, html, cookie_jar, user_agent, sParameters):
-        page = urlparse(url).scheme + '://' + urlparse(url).netloc
-        j = re.compile('<script[^>]src="([^"]+)').findall(html)
-        if j:
-            opener = build_opener(HTTPCookieProcessor(cookie_jar))
-            opener.addheaders = [('User-agent', user_agent), ('Referer', url)]
-            opener.open(page + j[0])
-        a = re.compile(r'xhr\.open\("GET","([^,]+)",').findall(html)
-        if a:
-            import random
-            aespage = page + a[0].replace('" + ww +"', str(random.randint(700, 1500)))
-            opener = build_opener(HTTPCookieProcessor(cookie_jar))
-            opener.addheaders = [('User-agent', user_agent), ('Referer', url)]
-            html = opener.open(aespage).read().decode('utf-8', 'replace')
-            cval = self.aes_decode(html)
-            cdata = re.compile('cookie="([^="]+).*?domain[^>]=([^;]+)').findall(html)
-            if cval and cdata:
-                c = Cookie(version=0, name=cdata[0][0], value=cval, port=None, port_specified=False, domain=cdata[0][1], domain_specified=True, domain_initial_dot=False, path="/", path_specified=True, secure=False, expires=time.time() + 21600, discard=False, comment=None, comment_url=None, rest={})
-                cookie_jar.set_cookie(c)
-                opener = build_opener(HTTPCookieProcessor(cookie_jar))
-                opener.addheaders = [('User-agent', user_agent), ('Referer', url)]
-                return opener.open(url, sParameters if sParameters else None).read().decode('utf-8', 'replace')
-
-    @staticmethod
-    def aes_decode(html):
-        try:
-            import pyaes
-            keys = re.compile(r'toNumbers\("([^"]+)"').findall(html)
-            if keys:
-                from binascii import hexlify, unhexlify
-                msg = unhexlify(keys[2])
-                key = unhexlify(keys[0])
-                iv = unhexlify(keys[1])
-                decrypter = pyaes.Decrypter(pyaes.AESModeOfOperationCBC(key, iv))
-                plain_text = decrypter.feed(msg)
-                plain_text += decrypter.feed()
-                return hexlify(plain_text).decode()
-        except Exception as e:
-            logger.error(e)

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # Python 3
 # ------------------------------------------------------------------------------
-# filmo.to — reine Filmseite, Laravel-App mit serverseitig gerendertem Katalog.
+# filmo — reine Filmseite, Laravel-App mit serverseitig gerendertem Katalog.
 #
 # BESONDERHEIT: der Hosterlink steht NICHT im HTML. Auf der Detailseite liegt je
 # Sprache eine provider-row mit Chips, die einen laravel-verschluesselten Payload
@@ -10,7 +10,7 @@
 #   1. Detailseite laden  -> CSRF-Token (<meta name="csrf-token">) + Session-Cookie
 #   2. POST /n mit p=<data-p>, Header X-CSRF-TOKEN + X-Requested-With
 #                         -> {"x": "<Einmal-Token>"}
-#   3. GET /n/<Token>     -> Redirect auf voe.sx/e/<id>?default_audio_language=xx
+#   3. GET /n/<Token>     -> Redirect auf die VOE-Embed-Adresse (/e/<id>?default_audio_language=xx)
 #
 # Schritt 2 und 3 laufen erst beim Abspielen (getHosterUrl), nicht beim Auflisten —
 # sonst wuerde jede Hosterliste ein Dutzend Requests ausloesen.
@@ -41,7 +41,7 @@ SITE_ICON = 'filmo.png'
 # Label des Hero-Sliders auf der Startseite. Der Slider selbst traegt im HTML keinen
 # Namen; seine Karten fuehren die Marker "NEU DIESE WOCHE" und "JETZT TRENDING"
 # (gemessen 2026-09-24: je 3 Karten, 5 ohne Marker) — kein Kartenlabel passt fuer
-# die ganze Reihe, das Label fasst die beiden zusammen (Jacks Wahl 24.09.2026).
+# die ganze Reihe, das Label fasst die beiden zusammen (so gewaehlt am 24.09.2026).
 HERO_TITLE = 'Neu & Trending'
 
 DOMAIN = cConfig().getSetting('plugin_' + SITE_IDENTIFIER + '.domain', 'filmo.to')
@@ -64,11 +64,12 @@ LANG_FLAGS = {
     'jp': ('(JPN)', '3'),
 }
 
-_RE_MOVIE = re.compile(r'<a[^>]+href="https://%s/movies/([a-z0-9\-]+)"' % re.escape(DOMAIN))
 # Die Seite nutzt DREI verschiedene Kartenlayouts, je nach Bereich:
 #   Listen (/movies, /genres, /letters) -> Titel im alt-Attribut des Posters
 #   /popular                            -> Titel in popular-spotlight-card__title
-#   /search                             -> Titel in movie-poster-grid-card__title
+#   /search                             -> Titel in movie-poster-grid-card__title,
+#                                          dazu Spotlight-Karten wie /popular
+#                                          (14.10.2026 bei "star wars": 12 + 8)
 # Statt drei Gesamtmuster wird deshalb je Karte gesucht: erst am Link auftrennen,
 # dann im Kartenstueck der Reihe nach die drei Titelquellen probieren. Das ist
 # robuster als ein Muster, das alle Layouts gleichzeitig treffen muss — und es
@@ -93,8 +94,9 @@ _RE_THUMB = re.compile(r'<img[^>]+src="([^"]+)"')
 # Poster (/img/poster/) selbst mit und bleiben unangetastet.
 _RE_DETAIL_POSTER = re.compile(r'(https://%s/img/poster/[a-z0-9\-]+/[^"\s?]+)' % re.escape(DOMAIN))
 _POSTER_OK = '/img/poster/'
-# Der Sammlungsname steht in einer eigenen Klasse und liegt gut 2000 Zeichen
-# hinter dem Link — dazwischen stehen die Poster-Vorschauen der Sammlung.
+# Der Sammlungsname steht in einer eigenen Klasse und liegt 1.400 bis 2.400 Zeichen
+# hinter dem Link (gemessen 14.10.2026) — dazwischen stehen die Poster-Vorschauen
+# der Sammlung.
 _RE_COLLECTION_TITLE = re.compile(r'collection-index-card__title[^>]*>\s*([^<]+?)\s*<')
 # Reihenkopf der Start- und Beliebt-Seite: der Titel steht im h3, direkt gefolgt
 # vom "Mehr anzeigen"-Link auf die zugehoerige Collection bzw. das Genre.
@@ -112,7 +114,7 @@ _RE_ROW_HEAD = re.compile(
 _RE_ROW_SPLIT = re.compile(r'<h3[^>]*class="mb-0"[^>]*>\s*([^<]{2,60}?)\s*<')
 # Genre-Links der Seite: der Name steht in einem <span> IM Link (Navigation:
 # navbar-truncate-text, Uebersicht: typography-root), der Slug im href. Bis
-# 2026.09.10 griff das Muster den Text direkt hinter dem Link ab, fand nichts
+# zum 10.09.2026 griff das Muster den Text direkt hinter dem Link ab, fand nichts
 # und fiel auf den englischen Slug zurueck („War“, „Romance“ statt Kriegsfilm,
 # Liebesfilm). Die Uebersicht traegt alle 19 Genres, die Navigation nur 16.
 _RE_GENRE = re.compile(r'<a[^>]+href="https://%s/genres/([a-z0-9\-]+)"[^>]*>\s*<span[^>]*>\s*([^<]{2,40}?)\s*</span>' % re.escape(DOMAIN))
@@ -123,8 +125,9 @@ _RE_COLLECTION_SPLIT = re.compile(
 _RE_PAGE = re.compile(r'[?&]page=(\d+)')
 
 # Nicht jeder Hoster wird per Redirect erreicht: manche (z.B. Byse) liefern
-# stattdessen eine Zwischenseite „Du verlaesst Filmo …" mit dem externen Link
-# darin. Das Muster greift jeden href, der NICHT auf die eigene Domain zeigt.
+# stattdessen eine Zwischenseite mit dem externen Link darin (am 14.10.2026:
+# „Dieses Video wird auf einer externen Seite gehostet."). Das Muster greift
+# jeden href, der NICHT auf die eigene Domain zeigt.
 _RE_EXTERN = re.compile(r'href="(https?://(?!(?:www\.)?%s)[^"]+)"' % re.escape(DOMAIN))
 _RE_CSRF = re.compile(r'<meta name="csrf-token" content="([^"]+)"')
 # Eine provider-row je Sprache; der Split traegt die Zeilen auseinander.
@@ -177,11 +180,15 @@ def load():
     cGui().setEndOfDirectory()
 
 
-def _request(sUrl, ignoreErrors=False):
-    """Seite holen. Zeilenumbrueche fliegen raus, damit die Regexes ohne DOTALL
-    ueber Tag-Grenzen kommen — Hausstil wie in den uebrigen Site-Files."""
-    oRequest = cRequestHandler(sUrl, ignoreErrors=ignoreErrors)
-    oRequest.addHeaderEntry('Accept-Language', 'de-DE,de;q=0.9')
+def _request(sUrl, ignoreErrors=False, caching=True):
+    """Seite holen (caching=False fuer die Hosterliste: Hoster kommen immer frisch, wie auf jeder Seite — seit dem 05.11.2026 auch hier). Die Seite ist mehrsprachig und richtet sich nach der Accept-Language;
+    Deutsch kommt ueber die Zeile des Browser-Profils (de vorn; gemessen 31.10.2026: html
+    lang="de", mit einer englischen Zeile lang="en"). Die eigene Zeile bis zum 31.10.2026
+    (de-DE,de;q=0.9) widersprach dem Firefox-Kopfsatz.
+    Zeilenumbrueche entfernt schon der requestHandler (removeNewLines ist dort Default) —
+    deshalb kommen die Regexes ohne DOTALL ueber Tag-Grenzen, Hausstil wie in den uebrigen
+    Site-Files."""
+    oRequest = cRequestHandler(sUrl, caching=caching, ignoreErrors=ignoreErrors)
     return oRequest.request()
 
 
@@ -299,7 +306,11 @@ def showCollections():
 
 
 def showLetters():
-    """A-Z-Index. Die Seite fuehrt 0-9, a bis z und 'all' als eigene Pfade."""
+    """A-Z-Index ueber 0-9 und a bis z. Die Seite fuehrt dazu 'all' (so viele Filme
+    wie /movies, 7.194) und 'other' (beschriftet „#"); die geprueften 'other'-Titel
+    stehen auch unter ihren Buchstaben. Die Buchstabenseiten fuehren nicht nur Titel
+    mit diesem Anfangsbuchstaben (unter „Q" etwa „Fünfzehn Tage sind für immer" und
+    „Someone Like You") — so liefert es die Seite selbst (alles gemessen 14.10.2026)."""
     oGui = cGui()
     params = ParameterHandler()
     for sLetter in ['0-9'] + [chr(c) for c in range(ord('a'), ord('z') + 1)]:
@@ -348,7 +359,7 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False):
         # Entdoppelt wird NUR ueber den Slug. Ein zusaetzlicher Titel-Abgleich
         # klang naheliegend (der Hero-Slider fuehrt jede Karte zweimal), warf in
         # den normalen Listen aber echte Filme mit aehnlichem Titel weg — dort
-        # fehlten dann 39 statt 42 Eintraege pro Seite.
+        # standen dann 39 statt 42 Eintraege auf einer Seite.
         sKey = sSlug.strip('/').lower()
         if sKey in seen:
             continue
@@ -357,7 +368,9 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False):
         # BEWUSST KEIN Titelfilter (cParser.searchTitle) bei der Suche: filmo sucht
         # serverseitig ueber Original- und Alternativtitel und findet zu
         # "star wars" auch "Krieg der Sterne". Ein Abgleich mit dem Suchwort
-        # wuerde genau diese Treffer wieder wegwerfen — gemessen 6 statt 17.
+        # wuerde genau diese Treffer wieder wegwerfen — gemessen 14.10.2026: 15
+        # statt 20, weg waeren u.a. "Krieg der Sterne", "Das Imperium schlägt
+        # zurück" und "Die Rückkehr der Jedi-Ritter".
         # Dieselbe Lehre wie bei animetoast.
         if bPoster and _POSTER_OK not in sThumb:
             sThumb = _fetchPoster(sSlug) or sThumb
@@ -454,7 +467,7 @@ def showHosters():
     params = ParameterHandler()
     entryUrl = params.getValue('entryUrl')
     sPrefLang = cConfig().getSetting('prefLanguage', '0')
-    sHtmlContent = _request(entryUrl)
+    sHtmlContent = _request(entryUrl, caching=False)
 
     hosters = []
     for sRow in _RE_LANGROW_SPLIT.split(sHtmlContent)[1:]:
@@ -467,7 +480,8 @@ def showHosters():
             sLabel = '(%s)' % mLang.group(1).strip() if mLang else ''
         # Filter nach der Spracheinstellung. Was keiner Sprache zugeordnet ist,
         # erscheint ausschliesslich unter "Alle" — gleiche Regel wie bei
-        # serienstream und burningseries: das Label der Seite entscheidet.
+        # serienstream und burningseries: das Sprachmerkmal der Seite entscheidet
+        # (hier die Flagge, siehe Kopf).
         if sPrefLang in ('1', '2', '3') and sLangPref != sPrefLang:
             continue
         for sPayload, sHosterName, sRest in _RE_CHIP.findall(sRow):
@@ -510,12 +524,15 @@ def getHosterUrl(sUrl=False):
 
     Der CSRF-Token gilt nur zusammen mit der Session, deshalb wird die
     Detailseite unmittelbar davor nochmal geholt — der requestHandler haelt
-    den Cookie-Jar, der Token muss aus derselben Antwort stammen.
+    den Cookie-Jar, der Token muss aus derselben Antwort stammen. Deshalb nie
+    aus dem Cache (bis zum 05.11.2026 kam die Seite daraus: nach Ablauf der
+    Sitzung — zwei Stunden — passte der alte Token nicht mehr zum neuen Cookie,
+    die Seite antwortete 419 und es gab keinen Stream).
     """
     params = ParameterHandler()
     entryUrl = params.getValue('entryUrl')
 
-    sHtmlContent = _request(entryUrl)
+    sHtmlContent = _request(entryUrl, caching=False)
     mToken = _RE_CSRF.search(sHtmlContent)
     if not mToken:
         logger.error('%s: kein CSRF-Token auf %s' % (SITE_NAME, entryUrl))
@@ -543,9 +560,9 @@ def getHosterUrl(sUrl=False):
 
     # Der Token-Aufruf endet BEI DEN MEISTEN Hostern per Redirect beim Ziel —
     # dann genuegt getRealUrl(). Ausnahme: Hoster wie Byse werden nicht
-    # weitergeleitet, sondern ueber eine Zwischenseite verlinkt („Du verlaesst
-    # Filmo, um ein Video beim externen Anbieter zu oeffnen"). Dort steht am
-    # Ende noch unsere eigene Domain, und der echte Link liegt im HTML.
+    # weitergeleitet, sondern ueber eine Zwischenseite verlinkt (Text siehe
+    # _RE_EXTERN oben). Dort steht am Ende noch unsere eigene Domain, und der
+    # echte Link liegt im HTML.
     # Deshalb wird die Antwort NICHT verworfen, sondern bei Bedarf ausgewertet.
     oFinal = cRequestHandler('%s/%s' % (URL_MINT, sMintToken), caching=False)
     oFinal.addHeaderEntry('Referer', entryUrl)

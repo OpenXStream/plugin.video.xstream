@@ -17,15 +17,9 @@ from resources.lib.cache import cCache
 from resources.lib.tools import infoDialog
 
 
-RESOLVE_ADDON_DATA_PATH = translatePath(os.path.join('special://home/userdata/addon_data/script.module.resolveurl'))
-
-RESOLVE_SHA = os.path.join(translatePath(RESOLVE_ADDON_DATA_PATH), "update_sha")
-
-ADDON_PATH = translatePath(os.path.join('special://home/addons/', '%s'))
-
 def delHtmlCache():
     # Cache nach X Tagen löschen (ohne Notification - läuft im Hintergrund beim Start)
-    deltaDay = int(cConfig().getSetting('cacheDeltaDay', 1))
+    deltaDay = int(cConfig().getSetting('cacheDeltaDay', 2))
     if deltaDay == 0:  # 0 = aus
         return
     deltaTime = 60 * 60 * 24 * deltaDay
@@ -36,16 +30,17 @@ def delHtmlCache():
 
 
 def _resolverUpdate():
-    """Resolver Update im Hintergrund - gibt Status zurück für Notification."""
+    """Resolver Update im Hintergrund - gibt Status zurück für Notification.
+
+    Laeuft bei jedem Start: den Schalter „Auto ResolveURL Update" gibt es seit dem
+    01.11.2026 nicht mehr (so entschieden; er stand ab Werk an). Ob es etwas zu holen gibt,
+    entscheidet updateManager am Commit von Gujals Master."""
     try:
-        if not os.path.isfile(RESOLVE_SHA) or cConfig().getSetting('githubUpdateResolver') == 'true':
-            status = updateManager.resolverUpdate()
-            return status
+        return updateManager.resolverUpdate()
     except Exception:
         import traceback
         logger.error('Resolver update error: %s' % traceback.format_exc())
         return False
-    return 'skipped'
 
 
 def _lateResolverNotify(future):
@@ -60,6 +55,32 @@ def _lateResolverNotify(future):
         status = False
     if status == True: infoDialog(cConfig().getLocalizedString(30116), sound=False, icon='INFO', time=6000)
     if status == False: infoDialog(cConfig().getLocalizedString(30117), sound=True, icon='ERROR')
+
+
+# Nachpruefung der Seiten, die beim Start-Check keine Antwort gaben (Status aus
+# RETRY_STATUSES: Timeout, Verbindungsfehler, unbekannter Fehler). Seit dem 22.10.2026
+# nimmt der Start-Check solche Seiten aus der globalen Suche — eine tote Seite kostete
+# dort jeden Aufruf einen vollen requestTimeout (gemessen: 11,6 statt 2,5 s). Ein kurzer
+# Aussetzer genau beim Kodi-Start (Netz noch nicht da, erster Kontakt hinter einem
+# Schutzsystem langsam, ein VPN, das beim Boot erst noch verbindet) sieht aber genauso
+# aus und klebte bis zum naechsten Start — deshalb werden NUR diese Seiten nach 2 Minuten
+# noch einmal gefragt; antwortet die Seite, ist sie wieder in der Suche und das Timeout
+# im Menue weg. EIN fester Versuch, keine Schleife (so entschieden am 22.10.2026: eine Nachpruefung,
+# 2 Minuten — nach einer Minute sind Netz, Handshake-Gedraenge und VPN sicher durch,
+# jede Minute spaeter fehlt eine gesunde Seite laenger in der Suche; was danach noch
+# nicht antwortet, steht mit [Timeout] im Menue und kommt ueber den manuellen Check).
+# Das _main-Flag steht dabei laengst auf 'finished', das Hauptmenue wartet also nie auf
+# die Nachpruefung; die Abrufe laufen wie beim Start in Daemon-Threads je Seite.
+# xbmc.Monitor() als Basistyp (keine Unterklasse — Kodis neue SWIG-Python-Anbindung
+# haelt Klassen von Unterklassen bis zum Skriptende fest); waitForAbort kehrt beim
+# Beenden von Kodi sofort mit True zurueck.
+RECHECK_DELAY = 120
+
+
+def _recheckDomains():
+    if xbmc.Monitor().waitForAbort(RECHECK_DELAY):
+        return
+    cPluginHandler().checkDomain(show_notify=False, retry=True)
 
 
 def main():
@@ -100,9 +121,7 @@ def main():
         # Nicht auf den Thread warten — er laeuft zu Ende oder wird mit Kodi beendet.
         executor.shutdown(wait=False)
 
-    # Html Cache aufraeumen BEVOR das Flag faellt: clearCache() leert auch
-    # cRequestHandler.persistent_openers — dieser Zustand darf nicht auftreten,
-    # waehrend der Nutzer schon durch die Seiten navigiert.
+    # Html Cache aufraeumen BEVOR das Flag faellt: das Hauptmenue startet erst danach.
     delHtmlCache()
 
     # Domain Check und Cache-Aufraeumen muessen fertig sein, bevor das Hauptmenue startet
@@ -111,8 +130,8 @@ def main():
     cConfig().setSetting(cConfig().getAddonInfo('id') + '_main', 'finished')    
 
     # Resolver Notification (nach Domain Check damit sich Notifications nicht überschneiden)
-    # Nur anzeigen wenn ein Update Check tatsächlich stattfand (nicht 'skipped').
-    # Timeout-Fall: Meldung kommt verspaetet ueber _lateResolverNotify; abgeschalteter Check bleibt still.
+    # 'skipped' gibt es nur noch im Timeout-Fall (oben): die Meldung kommt dann verspaetet ueber
+    # _lateResolverNotify. Einen abgeschalteten Check gibt es seit dem 01.11.2026 nicht mehr.
     # None ("kein Update verfuegbar") wird still abgehandelt, da uninteressant fuer User beim Auto-Check.
     # Bei manualResolverUpdate() bleibt der Notify fuer None erhalten (User hat aktiv geklickt).
     if resolver_status != 'skipped':
@@ -121,6 +140,9 @@ def main():
 
     # YouTube API Keys sicherstellen (Built-in Key für Video-Details/Alterscheck)
     ensure_youtube_api_keys()
+
+    # Zuletzt, weil der Service hierfuer zwei Minuten wach bleibt (Begruendung oben).
+    _recheckDomains()
 
 
 def ensure_youtube_api_keys():

@@ -36,25 +36,27 @@ URL_SEARCH_API = URL_MAIN + '/advancedsearch.php'
 # JEDEM Aufruf zehntausende Eintraege und warf nach dem Filtern die meisten
 # wieder weg (gemessen: 7 s fuer 28.000 Zeilen gegenueber 0,2 s fuer 50).
 ITEMS_PER_PAGE = 50
-# Die API gibt hoechstens 10.000 Treffer heraus (danach leeres Ergebnisfeld),
+# Die API gibt hoechstens 10.000 Treffer heraus (danach fehlt der Ergebnisblock, die
+# Antwort traegt nur ein Fehlerfeld — am 14.10.2026 „[DEEP_PAGING] …"),
 # gemessen 04.09.2026: ab Seite 201 kommt nur noch die Meldung. Die Seitenlage am
 # Weiter-Eintrag nennt deshalb hoechstens 200 als letzte Seite, und der
 # Weiter-Eintrag selbst endet dort (_hasNextPage) — vorher stand auf Seite 200
-# noch ein Weiter, das in die leere Seite 201 fuehrte (Audit 07.09.2026).
+# noch ein Weiter, das in die leere Seite 201 fuehrte (07.09.2026).
 MAX_PAGES = 200
 
 # Sammlungen, die nicht ins Menue sollen. Geprueft wird gegen Kennung UND
 # Titel, weil die Seite beides frei vergibt und mal das eine, mal das andere
-# eindeutig ist.
+# eindeutig ist. (Die leeren Programm-Sammlungen des TV-Archivs schliesst
+# schon die Abfrage in menuCollections aus.)
 BLOCKED_WORDS = ('hentai', 'adult', 'erotic', 'porn', 'xxx', 'nsfw', 'nude',
                  'playboy', 'fetish', 'bdsm')
 
 # Sprachkennungen je xStream-Einstellung (1 Deutsch, 2 Englisch, 3 Japanisch).
 # Die Seite laesst das Sprachfeld frei beschriften, deshalb stehen je Sprache
 # die ISO-Kurzformen (zwei- und dreistellig), der englische Name und bei
-# Deutsch die Eigenbezeichnung drin — gemessen ueber alle deutschsprachigen
-# Filme der Seite: 'ger' 55.000, 'German' 28.000, 'de' 500, 'Deutsch' 150,
-# 'deu' 80. Bei Japanisch ist 'jpn' mit 96 Prozent die Hauptform. Die Suche
+# Deutsch die Eigenbezeichnung drin — gemessen 14.10.2026 ueber alle deutschsprachigen
+# Filme der Seite: 'ger' 56.000, 'German' 28.000, 'de' 500, 'Deutsch' 230,
+# 'deu' 200. Bei Japanisch ist 'jpn' mit 95 Prozent die Hauptform. Die Suche
 # der Seite vergleicht wortweise und ohne Gross-/Kleinschreibung, 'german'
 # trifft also auch 'German' und 'GERMAN'. Aus derselben Tabelle entsteht die
 # Abfrage UND die Nachpruefung in _langOk, damit beide nie auseinanderlaufen.
@@ -149,7 +151,15 @@ def menuCollections():
     oGui = cGui()
     iPage = int(ParameterHandler().getValue('page') or 1)
 
-    sUrl = _apiUrl('mediatype:collection AND collection:movies',
+    # Die Programm-Sammlungen des TV-Nachrichtenarchivs (Kennung TVPROGRAM-…)
+    # stehen zwar unter den Filmsammlungen, die Suche liefert darin aber nichts:
+    # gemessen 08.10.2026 2.724 von 8.773 Sammlungen mit zusammen EINEM Eintrag,
+    # jeder Klick endete in „Kein Eintrag gefunden". Ausgeschlossen wird in der
+    # ABFRAGE, nicht in der Schleife unten — nur so stimmen Seitenzahl und
+    # Blaettern (121 statt 176 Seiten), sonst blieben ganze Seiten leer. Der
+    # Bindestrich gehoert zum Muster: die Kennung wird ohne Gross-/Kleinschreibung
+    # verglichen, ohne ihn fiele auch die echte Sammlung „tvprograms" mit raus.
+    sUrl = _apiUrl('mediatype:collection AND collection:movies AND NOT identifier:TVPROGRAM-*',
                    ['identifier', 'title', 'num_favorites'],
                    iPage=iPage, aSort=SORT_COLLECTIONS)
     oRequest = cRequestHandler(sUrl)
@@ -188,8 +198,9 @@ def _isBlocked(sId, sName):
     """Erwachsenen-Sammlungen aussortieren.
 
     Die Seite archiviert alles, auch was hier nichts zu suchen hat. Geprueft
-    wird gegen Kennung und Titel zusammen — von den 200 groessten Sammlungen
-    faellt damit genau eine raus, harmlose werden nicht mitgefangen.
+    wird gegen Kennung und Titel zusammen — von den ersten 200 Sammlungen des
+    Menues (nach Beliebtheit, gemessen 14.10.2026) faellt damit genau eine raus,
+    harmlose werden nicht mitgefangen.
     """
     sTest = ('%s %s' % (sId, sName)).lower()
     return any(w in sTest for w in BLOCKED_WORDS)
@@ -240,7 +251,9 @@ def showCollections(entryUrl=False, sGui=False):
         # (files_count zaehlt auch Vorschaubilder und Metadateien mit).
         oGuiElement = cGuiElement(sName, SITE_IDENTIFIER, 'showParts')
         # Die Seite liefert die Sprache mal als Text, mal als Liste — beides
-        # muss zu einem Wert werden, sonst sortiert hoster.py spaeter falsch.
+        # muss zu einem Wert werden: er steht nur im Label der Zeile
+        # (gui.createListItem), eine Liste stuende dort sonst roh als
+        # "['German', 'English']". hoster.py liest ihn nicht.
         oGuiElement.setLanguage(_firstLang(i.get('language')))
         if 'year' in i and len(str(i['year'])) == 4:
             oGuiElement.setYear(i['year'])
@@ -346,14 +359,14 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False):
         return
 
     # TITELSUCHE statt Volltext. Die Schnittstelle durchsucht sonst auch
-    # Beschreibungen, Kommentare und Rezensionen: „star wars" lieferte 16.431
-    # Treffer, ganz oben „Sex Madness (1938)" — der Titel hat mit dem Begriff
+    # Beschreibungen, Kommentare und Rezensionen: „star wars" lieferte am
+    # 26.08.2026 16.431 Treffer, ganz oben „Sex Madness (1938)" — der Titel hat mit dem Begriff
     # nichts zu tun, er ist nur der meistgeladene im Treffersatz. Ueber `title:`
     # sind es 5.742, und oben stehen tatsaechlich Star-Wars-Titel.
     #
     # Die ANFUEHRUNGSZEICHEN sind Pflicht, nicht Kosmetik: ohne sie zerreissen
     # Sonderzeichen die Abfrage. `title:(rock & roll)` beantwortet die Seite mit
-    # einem Backend-Fehler, `title:("rock & roll")` mit 252 Treffern. Die
+    # einem Backend-Fehler, `title:("rock & roll")` mit 252 Treffern (26.08.2026). Die
     # Phrasenform heilt nebenbei drei Faelle, die vorher schon mit einer
     # Fehlermeldung endeten (Doppelpunkt, Klammer und Anfuehrungszeichen im
     # Suchbegriff, z.B. „C:A:T"). Ein Anfuehrungszeichen IM Begriff wuerde die
@@ -361,7 +374,9 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False):
     sQuery = 'title:("%s") AND mediatype:movies%s' % (sSearchText.replace('"', ' '), _langQuery())
     sUrl = _apiUrl(sQuery, ['description', 'identifier', 'language', 'title', 'year'],
                    iPage=iPage, aSort=SORT_ENTRIES)
-    oRequest = cRequestHandler(sUrl, ignoreErrors=(sGui is not False))
+    # Eine Folgeseite der Suche meldet Fehler nicht als Fenster: dort gilt wie beim
+    # Blaettern „Kein Eintrag gefunden" (Seite 1 meldet wie bisher).
+    oRequest = cRequestHandler(sUrl, ignoreErrors=(sGui is not False or iPage > 1))
     jSearch = oRequest.requestJson()
     if not jSearch or 'response' not in jSearch:
         if not sGui:
@@ -407,8 +422,10 @@ def showEntries(entryUrl=False, sGui=False, sSearchText=False):
 def _absolute(sUrl):
     """Adressen der Seite vervollstaendigen.
 
-    Sie liefert drei Formen: vollstaendig, protokoll-relativ (beginnt mit //)
-    und domain-relativ (beginnt mit einem /). Ohne die Ergaenzung bekommt Kodi
+    Die Playlist fuehrt sie fast nur domain-relativ (beginnt mit einem /),
+    vereinzelt vollstaendig (gemessen 14.10.2026: 60 Eintraege, rund 7.400
+    Adressen); die protokoll-relative Form (beginnt mit //) war dabei nicht zu
+    sehen und wird vorsorglich mit behandelt. Ohne die Ergaenzung bekommt Kodi
     eine Adresse ohne Protokoll und kann nichts damit anfangen.
     """
     if sUrl.startswith('//'):
@@ -423,9 +440,10 @@ def _parsePlaylist(sHtmlContent):
 
     Bewusst OHNE cParser geschnitten — dessen Sonderzeichen-Ersetzung wuerde
     im rohen JSON herumschreiben. Die Dateiadresse wird DEKODIERT gemerkt und
-    erst unmittelbar vor der Wiedergabe wieder kodiert: der Parameterweg jagt
-    jeden Wert durch unquote_plus, eine schon kodierte Adresse kaeme dort
-    zerlegt an (gleiche Falle wie bei movie2k). Fuehrt ein Video mehrere
+    erst unmittelbar vor der Wiedergabe wieder kodiert (roh im Parameter, kodiert
+    nur am Abruf — wie bei movie2k; bis zum 02.11.2026 jagte der Parameterweg
+    jeden Wert durch unquote_plus, eine schon kodierte Adresse kam dort zerlegt
+    an). Fuehrt ein Video mehrere
     Quellen, sind das Aufloesungsstufen — genommen wird die hoechste.
     """
     aParts = []
@@ -533,12 +551,6 @@ def showSearch():
         sSearchText = cGui().showKeyBoard(sHeading=cConfig().getLocalizedString(30287))
         if not sSearchText: return
         win.setProperty('xstream.internetarchive.lastSearchText', sSearchText)
-    _search(False, sSearchText)
-    cGui().setEndOfDirectory()
-
-def showSearchColl(sName):
-    sSearchText = sName
-    if not sSearchText: return
     _search(False, sSearchText)
     cGui().setEndOfDirectory()
 

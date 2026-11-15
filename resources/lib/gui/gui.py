@@ -4,16 +4,27 @@
 
 import os
 import sys
+import concurrent.futures
 import xbmc
-import xbmcgui 
+import xbmcgui
 import xbmcplugin
 
 from resources.lib import utils
 from resources.lib.config import cConfig
+from resources.lib.logger import logger
 from resources.lib.gui.contextElement import cContextElement
 from resources.lib.gui.guiElement import cGuiElement
 from resources.lib.handler.parameterHandler import ParameterHandler
 from urllib.parse import quote_plus, urlencode
+
+
+def _positiv(wert):
+    """Staffel bzw. Folge der Site als Zahl ueber 0? Eine Nicht-Zahl (Doppelfolge '1-2', 'X1') zaehlt als keine —
+    bis zum 02.11.2026 warf int()/float() darauf, und die ganze Liste brach mit einem Skriptfehler ab."""
+    try:
+        return float(wert) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 class cGui:
@@ -29,6 +40,24 @@ class cGui:
     # cGui-Instanz baut und der Dispatch sie nicht in der Hand hat.
     _infoShown = False
     _endSet = False
+    # Merker "Inhaltsart gesetzt" (setView), aus demselben Grund ein Klassenattribut: die Site-Funktionen
+    # setzen die Ansicht oft auf einer eigenen Instanz (cGui().setView('episodes')) und schliessen auf einer
+    # anderen ab (cGui().setEndOfDirectory()). Als Instanz-Merker sah der Abschluss davon nichts und setzte
+    # 'files' darueber — Kodi behaelt den letzten setContent-Aufruf, die Staffel- und Folgenlisten von neun Sites
+    # kamen so bis zum 03.11.2026 als 'files' an — der Skin behandelte sie wie Dateien, nicht wie Staffeln bzw. Folgen.
+    _viewSet = False
+    # Eintraege, die auf den parallelen TMDB-Vorlauf warten (nur mit "TMDB Infos laden").
+    # Klassenattribut wie _globalSearch: ein Kodi-Aufruf baut EIN Verzeichnis, und die
+    # Site-Funktionen bauen sich unterwegs eigene cGui-Instanzen — abgeschlossen wird
+    # ueber irgendeine davon (setEndOfDirectory), dort werden alle wartenden Eintraege
+    # ausgegeben. Je Eintrag: (Instanz, GuiElement, Parameter-Kopie, bIsFolder, iTotal, isHoster)
+    _pending = []
+    # Obergrenze des TMDB-Vorlaufs je Liste: braucht eine Liste so viele Abfragen oder mehr,
+    # bekommt sie als GANZE keine TMDB-Daten — A-Z- und Genre-Listen mit hunderten Eintraegen
+    # (25.10.2026: burningseries T 1.179, netzkino Dramakino 240) kosten sonst je Eintrag einen TMDB-Abruf.
+    # Gezaehlt wird im Vorlauf, nicht ueber die Listengroesse der Site (siehe __flushPending).
+    # Die Sammelsuchen (globale Suche, Weitere Quellen) laufen ohne diese Grenze.
+    META_LIMIT = 100
     # This class "abstracts" a list of xbmc listitems.
     def __init__(self):
         try:
@@ -40,14 +69,9 @@ class cGui:
         except:
             self.pluginPath = ''
         self.isMetaOn = cConfig().getSetting('TMDBMETA') == 'true'
-        if cConfig().getSetting('metaOverwrite') == 'true':
-            self.metaMode = 'replace'
-        else:
-            self.metaMode = 'add'
         # for globalSearch or alterSearch
         self.globalSearch = False
         self._collectMode = False
-        self._isViewSet = False
         self.searchResults = []
 
     def addFolder(self, oGuiElement, params='', bIsFolder=True, iTotal=0, isHoster=False):
@@ -61,12 +85,72 @@ class cGui:
             import copy
             self.searchResults.append({'guiElement': oGuiElement, 'params': copy.deepcopy(params), 'isFolder': bIsFolder})
             return
-        if not oGuiElement._isMetaSet and self.isMetaOn and oGuiElement._mediaType and iTotal < 100:
-            tmdbID = params.getValue('tmdbID')
-            if tmdbID:
-                oGuiElement.getMeta(oGuiElement._mediaType, tmdbID, mode=self.metaMode)
-            else:
-                oGuiElement.getMeta(oGuiElement._mediaType, mode=self.metaMode)
+        if self.isMetaOn:
+            # Mit "TMDB Infos laden" wartet JEDER Eintrag bis setEndOfDirectory: dort holt
+            # preloadMeta die TMDB-Daten aller Eintraege parallel, danach kommen sie in der
+            # Reihenfolge des Aufrufs ins Verzeichnis. Bis zum 25.10.2026 fragte addFolder je
+            # Eintrag einzeln nacheinander (DoH plus TMDB-Suche je Eintrag; megakino 20 Filme
+            # 7,1 statt 2,8 s — parallel 1,0 statt 4,6 s fuer die 20 Abfragen). Kodi zeigt die
+            # Liste ohnehin erst nach endOfDirectory. Die Parameter werden KOPIERT: viele Sites
+            # fuellen einen ParameterHandler je Eintrag neu, beim spaeten Ausgeben truege sonst
+            # jeder Eintrag die Werte des letzten.
+            aParams = ParameterHandler.from_dict(params.to_dict()) if params != '' else ''
+            cGui._pending.append((self, oGuiElement, aParams, bIsFolder, iTotal, isHoster))
+            return
+        self.__addItem(oGuiElement, params, bIsFolder, iTotal, isHoster)
+
+    @staticmethod
+    def preloadMeta(aJobs, iLimit=0):
+        """TMDB-Daten mehrerer Eintraege parallel holen: aJobs = [(oGuiElement, tmdbID), ...].
+
+        Je Eintrag ist getMeta eine TMDB-Abfrage (plus DoH-Abruf); nacheinander summiert sich
+        das (gemessen rund 2,8 s fuer 20 Treffer, bei traegen Antworten mehr), parallel sind es
+        rund 0,2 s. getMeta setzt selbst _isMetaSet, deshalb holt addFolder/__addItem danach
+        nichts doppelt; ohne Medientyp oder mit gesetztem _isMetaSet wird nichts geholt.
+        iLimit: braucht die Liste so viele Abfragen oder mehr, wird NICHTS geholt (0 = keine
+        Grenze). Nutzer: setEndOfDirectory (Listen, mit META_LIMIT) und xstream._preloadMeta
+        (globale Suche, Weitere Quellen, ohne Grenze).
+
+        WICHTIG submit statt map: bei map fliegt die erste Exception beim Iterieren weiter und
+        reisst den ganzen Vorlauf mit. Jedes Ergebnis wird deshalb einzeln abgefangen — ein
+        gescheiterter Abruf darf die uebrigen Eintraege nicht mitreissen.
+        """
+        aNeeded = [(oElement, tmdbID) for oElement, tmdbID in aJobs
+                   if getattr(oElement, '_mediaType', '') and not getattr(oElement, '_isMetaSet', False)]
+        if not aNeeded:
+            return
+        if iLimit and len(aNeeded) >= iLimit:
+            logger.info('TMDB-Vorlauf ausgelassen: %d Eintraege, Grenze %d' % (len(aNeeded), iLimit))
+            return
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(10, len(aNeeded))) as executor:
+                aFutures = [executor.submit(oElement.getMeta, oElement._mediaType, tmdbID or '')
+                            for oElement, tmdbID in aNeeded]
+                for oFuture in aFutures:
+                    try:
+                        oFuture.result()
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.error('Meta-Vorlauf fehlgeschlagen: %s' % e)
+
+    def __flushPending(self, success):
+        """Wartende Eintraege ausgeben (Vorlauf parallel, dann in Aufrufreihenfolge). Bei einem
+        gescheiterten Verzeichnis (success False) verfallen sie — Kodi verwirft die Liste."""
+        aPending, cGui._pending = cGui._pending, []
+        if not aPending or not success:
+            return
+        # Die Grenze META_LIMIT zaehlt der Vorlauf selbst ueber die Eintraege, die eine Abfrage
+        # brauchen — nicht ueber die Listengroesse, die die Site an addFolder gibt (iTotal): die
+        # Suche von aniworld und burningseries meldet dort ihren ganzen Katalog (2.506 bzw.
+        # 10.709, auch bei 3 Treffern), netzkino zaehlt vor dem Aussieben. Mit "iTotal < 100"
+        # blieben diese Treffer ohne TMDB-Daten (gemessen 25.10.2026).
+        cGui.preloadMeta([(oElement, aParams.getValue('tmdbID') if aParams != '' else '')
+                          for oGui, oElement, aParams, bIsFolder, iTotal, isHoster in aPending], cGui.META_LIMIT)
+        for oGui, oElement, aParams, bIsFolder, iTotal, isHoster in aPending:
+            oGui.__addItem(oElement, aParams, bIsFolder, iTotal, isHoster)
+
+    def __addItem(self, oGuiElement, params, bIsFolder, iTotal, isHoster):
         sUrl = self.__createItemUrl(oGuiElement, bIsFolder, params)
 #kasi
         try:
@@ -115,12 +199,8 @@ class cGui:
             infoString += ' %s' % oGuiElement.getSiteName()
         if oGuiElement._sLanguage != '':
             infoString += ' (%s)' % oGuiElement._sLanguage
-        if oGuiElement._sSubLanguage != '':
-            infoString += ' *Sub: %s*' % oGuiElement._sSubLanguage
         if oGuiElement._sQuality != '':
             infoString += ' [%s]' % oGuiElement._sQuality
-        if oGuiElement._sInfo != '':
-            infoString += ' [%s]' % oGuiElement._sInfo    
         if infoString:
             infoString = '[I]%s[/I]' % infoString
         itemValues['title'] = itemTitle + infoString
@@ -151,11 +231,12 @@ class cGui:
     @staticmethod
     def _resolveVideoMediaType(oGuiElement, itemValues):
         """Korrekter Kodi-Medientyp fuer setMediaType.
-        Die Basis uebergab getType() (sType, z.B. 'video') und vertaggt damit
-        Filme/Serien falsch, da setType('movie') nie gerufen wird — nur
-        setMediaType('movie'). Reihenfolge: echtes _mediaType, dann
-        itemValues['mediaType']; sonst Rueckfall auf getType() (altes Verhalten),
-        damit Nicht-Video-Eintraege wie Menue-/Ordnerpunkte unveraendert bleiben."""
+        Die Basis uebergab getType() (sType, immer 'video' — einen Setter dazu rief
+        nie jemand, er ist seit dem 02.11.2026 raus) und vertaggte damit Filme/Serien
+        falsch; den Typ setzt nur setMediaType('movie'). Reihenfolge: echtes
+        _mediaType, dann itemValues['mediaType']; sonst Rueckfall auf getType()
+        (altes Verhalten), damit Nicht-Video-Eintraege wie Menue-/Ordnerpunkte
+        unveraendert bleiben."""
         media_type = (getattr(oGuiElement, '_mediaType', '') or '').lower()
         if media_type in ('movie', 'tvshow', 'season', 'episode', 'musicvideo'):
             return media_type
@@ -257,21 +338,17 @@ class cGui:
 
     def __createContextMenu(self, oGuiElement, listitem, bIsFolder, sUrl):
         contextmenus = []
-        if len(oGuiElement.getContextItems()) > 0:
-            for contextitem in oGuiElement.getContextItems():
-                params = contextitem.getOutputParameterHandler()
-                sParams = params.getParameterAsUri()
-                sTest = "%s?site=%s&function=%s&%s" % (self.pluginPath, contextitem.getFile(), contextitem.getFunction(), sParams)
-                contextmenus += [(contextitem.getTitle(), "RunPlugin(%s)" % (sTest,),)]
         itemValues = oGuiElement.getItemValues()
         contextitem = cContextElement()
         # Sauberer Titel fuer Trailer, TMDB-Info und Weitere Quellen: ein Film — auch einer, den
         # eine Seite innerhalb einer Serie fuehrt — sucht mit seinem Filmtitel (Sites legen ihn
         # als 'originaltitle' ab, wenn das Label einen Vorsatz traegt, etwa "5 - Titel" bei
         # aniworld/serienstream/burningseries); Staffeln und Folgen suchen mit der Serie
-        # (TVShowTitle); alles andere mit dem Titel des Eintrags.
+        # (TVShowTitle); alles andere mit dem Titel des Eintrags. Mit "TMDB Infos laden" steht in
+        # 'originaltitle' der Originaltitel von TMDB — den Titel der Seite sichert getMeta vorher
+        # als 'siteTitle' (Grund dort), der geht vor.
         if oGuiElement._mediaType == 'movie':
-            _cleanTitle = itemValues.get('originaltitle', '') or oGuiElement.getTitle()
+            _cleanTitle = itemValues.get('siteTitle', '') or itemValues.get('originaltitle', '') or oGuiElement.getTitle()
         else:
             _cleanTitle = itemValues.get('TVShowTitle', '') or oGuiElement.getTitle()
         # 1. Trailer
@@ -295,6 +372,11 @@ class cGui:
         if oGuiElement._mediaType == 'movie' or oGuiElement._mediaType == 'tvshow':
             contextitem.setTitle(cConfig().getLocalizedString(30239))   # TMDB Info
             searchParams = {'searchTitle': _cleanTitle, 'sMeta': oGuiElement._mediaType, 'sYear': oGuiElement._sYear}
+            # Bekannte TMDB-ID mitgeben wie beim Trailer: das Fenster zeigt dann genau den Film des
+            # Eintrags mit einem Aufruf statt einer Namenssuche plus Details. Bis zum 25.10.2026 las
+            # es ListItem.Property(TmdbId), die niemand setzt (unsere Property heisst tmdb_id).
+            if 'tmdb_id' in itemValues and itemValues['tmdb_id']:
+                searchParams['tmdb_id'] = str(itemValues['tmdb_id'])
             contextmenus += [(contextitem.getTitle(), "RunPlugin(%s?function=viewInfo&%s)" % (self.pluginPath, urlencode(searchParams),),)]
         # 3. Hoster wählen
         if not bIsFolder and cConfig().getSetting('hosterSelect') == 'Auto':
@@ -314,32 +396,17 @@ class cGui:
         if oGuiElement._mediaType == 'season' or oGuiElement._mediaType == 'episode':
             contextitem.setTitle(cConfig().getLocalizedString(30241))   # Info
             contextmenus += [(contextitem.getTitle(), cConfig().getLocalizedString(30242),)]    # Action(Info)
-        if 'imdb_id' in itemValues and 'title' in itemValues:
-            metaParams = {}
-            if itemValues['title']:
-                metaParams['title'] = oGuiElement.getTitle()
-            if 'mediaType' in itemValues and itemValues['mediaType']:
-                metaParams['mediaType'] = itemValues['mediaType']
-            elif 'TVShowTitle' in itemValues and itemValues['TVShowTitle']:
-                metaParams['mediaType'] = 'tvshow'
-            else:
-                metaParams['mediaType'] = 'movie'
-            if 'season' in itemValues and itemValues['season'] and int(itemValues['season']) > 0:
-                metaParams['season'] = itemValues['season']
-                metaParams['mediaType'] = 'season'
-            if 'episode' in itemValues and itemValues['episode'] and int(itemValues['episode']) > 0 and 'season' in itemValues and itemValues['season'] and int(itemValues['season']):
-                metaParams['episode'] = itemValues['episode']
-                metaParams['mediaType'] = 'episode'
-        if not bIsFolder:
-            contextitem.setTitle(cConfig().getLocalizedString(30244))   # Playlist hinzufügen
-            contextmenus += [(contextitem.getTitle(), "RunPlugin(%s&playMode=enqueue)" % (sUrl,),)]
+        # „Zur Abspielliste hinzufuegen" ist seit dem 01.11.2026 raus (so entschieden): der Eintrag legte den Stream-Link
+        # schon beim Hinzufuegen fest, und beim Abspielen aus der Liste liefen weder Ausweich-Hoster noch die
+        # Player-Ueberwachung mit (hoster.play, cPlayer.startPlayer).
         listitem.addContextMenuItems(contextmenus)
         return listitem
 
     def setEndOfDirectory(self, success=True, pUpdateListing=False, pCacheToDisc=True):
+        self.__flushPending(success)
         # mark the listing as completed, this is mandatory
         cGui._endSet = True
-        if not self._isViewSet:
+        if not cGui._viewSet:
             self.setView('files')
         xbmcplugin.setPluginCategory(self.pluginHandle, "")
         # add some sort methods, these will be available in all views
@@ -354,18 +421,15 @@ class cGui:
 
     def setView(self, content='movies'):
         # set the listing to a certain content, makes special views available
-        # sets view to the viewID which is selected in xStream settings
-        # see http://mirrors.xbmc.org/docs/python-docs/stable/xbmcplugin.html#-setContent
+        # see https://docs.kodi.tv/d1/d32/group__python__xbmcplugin.html — setContent (read 14.10.2026)
         # (seasons is also supported but not listed)
+        # Die Ansicht selbst waehlt der Skin bzw. der Nutzer im Seitenmenue; den Reiter "Ansichten"
+        # (feste Ansichtsnummern je Inhalt) gibt es seit dem 01.11.2026 nicht mehr (so entschieden).
         content = content.lower()
         supportedViews = ['files', 'songs', 'artists', 'albums', 'movies', 'tvshows', 'seasons', 'episodes', 'musicvideos']
         if content in supportedViews:
-            self._isViewSet = True
+            cGui._viewSet = True
             xbmcplugin.setContent(self.pluginHandle, content)
-        if cConfig().getSetting('auto-view') == 'true' and content:
-            viewId = cConfig().getSetting(content + '-view')
-            if viewId:
-                xbmc.executebuiltin("Container.SetViewMode(%s)" % viewId)
 
     def updateDirectory(self):
         xbmc.executebuiltin("Container.Refresh")
@@ -379,15 +443,30 @@ class cGui:
         # mediaType und year, die danach gelistete Serie bekommt sie mit (falsches Jahr,
         # fremdes Poster). getParameterAsUri() loescht ausserdem title/site/function und
         # veraenderte damit bisher ebenfalls das Objekt des Aufrufers.
-        params = ParameterHandler.from_dict(params.to_dict())
+        # Ein 'trumb' aus dem Klick (das Bild des Eintrags, der hierher fuehrte) kommt nicht
+        # mit: die Adresse unten traegt 'trumb' ausdruecklich mit dem Bild DIESES Eintrags.
+        # Mit beiden stand der Parameter doppelt in der Adresse, beim Lesen gewann der
+        # letzte (parse_qsl) — und der Icon-Hook in addFolder/addDir gab jedem Kind das
+        # Bild des Grosseltern-Eintrags statt das des Elternteils (22.10.2026:
+        # kellerkino, streamcloud, serienstream in jeder Liste hinter einem Bild-Eintrag).
+        params = ParameterHandler.from_dict({k: v for k, v in params.to_dict().items() if k != 'trumb'})
         itemValues = oGuiElement.getItemValues()
         if 'tmdb_id' in itemValues and itemValues['tmdb_id']:
             params.setParam('tmdbID', itemValues['tmdb_id'])
+        elif oGuiElement._mediaType in ('movie', 'tvshow'):
+            # Filme und Serien tragen nur ihre EIGENE TMDB-ID. Eine geerbte gehoert zum Eintrag
+            # davor: zur Serie bei deren Filmliste (AniWorld, BurningSeries und SerienStream fuehren
+            # sie als Staffel 0) und zum TMDB-Browser-Eintrag bei Weitere Quellen, dessen Treffer
+            # auch Fortsetzungen und Namensvettern sind (der Filter dort prueft nur, ob der Titel
+            # enthalten ist). Mit der ID der Serie oder eines anderen Films stuende an der
+            # Wiedergabe (hoster._setVideoInfo) eine falsche TMDB-ID. Staffeln, Folgen und Hoster erben
+            # weiter, die ID ihrer Serie. getParameterAsUri laesst den leeren Wert weg.
+            params.setParam('tmdbID', '')
         if 'TVShowTitle' in itemValues and itemValues['TVShowTitle']:
             params.setParam('TVShowTitle', itemValues['TVShowTitle'])
-        if 'season' in itemValues and itemValues['season'] and int(itemValues['season']) > 0:
+        if 'season' in itemValues and _positiv(itemValues['season']):
             params.setParam('season', itemValues['season'])
-        if 'episode' in itemValues and itemValues['episode'] and float(itemValues['episode']) > 0:
+        if 'episode' in itemValues and _positiv(itemValues['episode']):
             params.setParam('episode', itemValues['episode'])
         if not bIsFolder:
             params.setParam('MovieTitle', oGuiElement.getTitle())
@@ -398,9 +477,12 @@ class cGui:
                 params.setParam('mediaType', oGuiElement._mediaType)
             elif 'TVShowTitle' in itemValues and itemValues['TVShowTitle']:
                 params.setParam('mediaType', 'tvshow')
-            if 'season' in itemValues and itemValues['season'] and int(itemValues['season']) > 0:
+            if 'season' in itemValues and _positiv(itemValues['season']):
                 params.setParam('mediaType', 'season')
-            if 'episode' in itemValues and itemValues['episode'] and float(itemValues['episode']) > 0:
+            # Jede Folge mit einer Nummer ist eine Folge — auch eine Doppelfolge ('1-2') oder 'X1', deren Nummer oben
+            # nicht als Zahl mitgeht; bis zum 02.11.2026 blieb so ein Eintrag beim Typ seiner Staffel ('season') und
+            # die Wiedergabe trug den falschen Medientyp (02.11.2026)
+            if 'episode' in itemValues and str(itemValues['episode']).strip():
                 params.setParam('mediaType', 'episode')
             # Pass imdb_id and year for Trakt.TV scrobbling
             if 'imdb_id' in itemValues and itemValues['imdb_id']:
@@ -437,7 +519,7 @@ class cGui:
             # " star wars " gegen "star wars": kinoger 0 statt 12, moflix 0 statt 6,
             # megakino 2 statt 14, global 166 statt 234. Der Fix sitzt bewusst
             # HIER und nicht in den Site-Files — die Tastatur ist die eine Stelle,
-            # durch die jeder Sucheinstieg laeuft (27 Aufrufer). Besteht die
+            # durch die jeder Sucheinstieg laeuft. Besteht die
             # Eingabe nur aus Leerzeichen, bleibt es beim bisherigen False.
             sSearchText = oKeyboard.getText().strip()
             if len(sSearchText) > 0:
@@ -456,15 +538,17 @@ class cGui:
         cConfig().showSettingsWindow()
 
     @staticmethod
-    def showNofication(sTitle, iSeconds=0):
-        if iSeconds == 0:
-            iSeconds = 1000
-        else:
-            iSeconds = iSeconds * 1000
-        xbmc.executebuiltin("Notification(%s,%s,%s,%s)" % (cConfig().getLocalizedString(30308), (cConfig().getLocalizedString(30309) % str(sTitle)), iSeconds, cConfig().getAddonInfo('icon')))
-
-    @staticmethod
     def showError(sTitle, sDescription, iSeconds=0):
+        # Die allgemeinen Hoster-Meldungen „Kein Hosterlink uebergeben" (30134) und „Stream nicht verfuegbar //
+        # Link defekt" (30135) entfallen wie die Leer-Meldungen in showInfo, wenn der requestHandler in diesem
+        # Klick schon einen Abruffehler gemeldet hat (Einblendung bei Cloudflare, DDoS-Guard, Timeout): die Site
+        # fand den Link nicht, WEIL ihr Abruf scheiterte — sonst zwei Hinweise fuer einen Klick (filmo 26.10.2026).
+        # Im Hosterlink-Schritt zeigt der requestHandler kein Fenster (hoster.py, quietWindows), dann kommt sie.
+        if sDescription in (cConfig().getLocalizedString(30134), cConfig().getLocalizedString(30135)):
+            rh = sys.modules.get('resources.lib.handler.requestHandler')
+            if rh is not None and rh.errorShown():
+                logger.info('Hoster-Meldung entfaellt: der Abruffehler wurde schon gemeldet')
+                return
         if iSeconds == 0:
             iSeconds = 1000
         else:
@@ -481,6 +565,17 @@ class cGui:
         if cGui._globalSearch:
             return
         cGui._infoShown = True
+        # Hat der requestHandler in diesem Klick schon einen Abruffehler gemeldet (Einblendung bei
+        # Cloudflare/DDoS-Guard/Timeout, Fenster bei 4xx/5xx), entfallen die beiden Leer-Meldungen
+        # „Kein Eintrag gefunden" (30253) und „Stream // Hoster nicht verfuegbar" (30141) — sonst zwei
+        # Hinweise fuer einen Klick, wie beim Sprach-Hinweis bis zum 10.09.2026. Eigene Texte kommen
+        # immer; _infoShown bleibt gesetzt, der Notabschluss im Dispatch gilt weiter. Ein stiller Abruf
+        # (ignoreErrors, Folgeseiten der Suche) setzt den Merker nicht, dort bleibt die Leer-Meldung.
+        if sDescription in (cConfig().getLocalizedString(30253), cConfig().getLocalizedString(30141)):
+            rh = sys.modules.get('resources.lib.handler.requestHandler')
+            if rh is not None and rh.errorShown():
+                logger.info('Leer-Meldung entfaellt: der Abruffehler wurde schon gemeldet')
+                return
         if iSeconds == 0:
             iSeconds = 1000
         else:
@@ -494,7 +589,7 @@ class cGui:
         # auf "Alle" (Werksdefault 0; ungesetzt liefert getSetting einen Leerstring),
         # liegt es NICHT an der Sprache: der Titel hat schlicht keine Hoster. Dann wird
         # hier NICHTS gemeldet: alle Aufrufer mit "Alle" sind Hoster-Funktionen, und
-        # hoster.py meldet die leere Liste selbst (30141) — bis zur 2026.09.10 kam
+        # hoster.py meldet die leere Liste selbst (30141) — bis zum 10.09.2026 kam
         # hier zusaetzlich "Kein Eintrag gefunden", also zwei Einblendungen fuer einen
         # Klick. Listenfunktionen rufen showLanguage nur mit gesetzter Sprache.
         # Geprueft wird auf die drei echten Sprachwerte statt auf "0", weil beide

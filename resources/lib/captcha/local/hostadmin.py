@@ -1,25 +1,11 @@
 # -*- coding: utf-8 -*-
 # Python 3
 #
-# Lokale Captcha-Loeser: alles, was der Client SELBST rechnet — ohne Dienst,
-# ohne Schluessel und ohne Kosten. Gegenstueck zu captcha_solver.py (2captcha).
-#
-# Erster Fall ist Altcha (Proof-of-Work): die Seite liefert eine Challenge,
-# der Client sucht die Zahl, deren SHA-256 zusammen mit dem Salt die Challenge
-# trifft, und schickt das Ergebnis als Formularfeld zurueck. Kostet nur
-# Rechenzeit — deshalb haengt dieser Weg am Schalter `captcha.enabled`, NICHT
-# am 2Captcha-Schluessel: wer keinen Dienst bezahlt, soll eine Pruefung, die
-# ihn nichts kostet, trotzdem bestehen koennen.
-#
-# Die Funktionen kennen weder Seite noch Domain. Woher die Challenge-Adresse
-# kommt, entscheidet der Aufrufer (bei serienstream steht sie im Markup der
-# Episodenseite als data-altcha-challenge-url).
-#
-# Zweiter Fall ist die Pruefseite des Fremd-WAF HostAdmin.online (ebenfalls
-# Proof-of-Work): solve_hostadmin() rechnet nur und liefert den Rumpf fuer die
-# Einreichung. Abruf, Einreichen, Cookies und der feste User-Agent gehoeren
-# dem Aufrufer — der WAF bindet seine Freigabe an beides.
-
+# HostAdmin.online-WAF (Proof-of-Work-Pruefseite): solve_hostadmin() rechnet
+# nur und liefert den Rumpf fuer die Einreichung; Abruf, Einreichen, Cookies und
+# fester User-Agent gehoeren dem Aufrufer. Teil des Pakets
+# resources.lib.captcha.local (Fassade in __init__.py), verschoben aus dem
+# frueheren Sammelmodul — Rechenkern unveraendert.
 import base64
 import hashlib
 import json
@@ -27,21 +13,8 @@ import re
 import struct
 import time
 
-from resources.lib.config import cConfig
-from resources.lib.handler.requestHandler import cRequestHandler
 from resources.lib.logger import logger
-
-# Vorgabe fuer maxnumber, wenn die Seite keinen Wert nennt — die Vorgabe des
-# Altcha-Widgets selbst. Nennt die Seite einen Wert (serienstream 09/2026:
-# 100000), gilt der; einen Deckel gibt es bewusst nicht: die einzige Bremse ist
-# die Zeitgrenze, und die passt sich dem Geraet an — ein schneller Rechner
-# schafft in derselben Zeit mehr als ein Fire Stick, ein fester Deckel haette
-# ihn nur ausgebremst (Jack 10.09.2026: „Deckel raus, nur Zeitgrenze reicht").
-ALTCHA_DEFAULT_MAX_NUMBER = 1000000
-# Zeitgrenze fuer die Suche: laenger als das soll kein Klick warten. Zur
-# Einordnung: 100.000 SHA-256 dauern hier rund 0,1 s, auf einem schwachen
-# Android-Geraet grob eine Sekunde.
-ALTCHA_TIME_LIMIT = 30
+from resources.lib.captcha.local import local_ready
 
 # --- HostAdmin.online (Fremd-WAF mit Proof-of-Work-Pruefseite) -------------
 # Die Pruefseite kommt mit Status 200 und ist nur am Markup zu erkennen. Der WAF
@@ -55,6 +28,16 @@ ALTCHA_TIME_LIMIT = 30
 HOSTADMIN_MARKERS = ('hostadminonline-waf-verify', 'runWafEngine', '__WAF_I18N__')
 # Dorthin gehoert die Loesung (POST, JSON), relativ zur geschuetzten Seite.
 HOSTADMIN_VERIFY_PATH = '/hostadminonline-waf-verify'
+# Schalter `isBackground` im Aufruf runWafEngine({...}), Engine am 20.10.2026
+# entschluesselt: true = Hintergrund-Lauf. Dieselbe Aufgabe (Seed, Runden,
+# Mischwert, Datenhash), aber ohne Anzeige, eingereicht mit "fast": true und
+# keepalive, danach KEIN Neuladen und keine Sperrseite — gedacht fuer eine
+# Seite, die ihren Inhalt schon zeigt und nur die Freigabe auffrischt. Nur
+# als Literal erkannt (true, !0, !![]), alles andere gilt wie bisher als false.
+HOSTADMIN_BACKGROUND = re.compile(r'\bisBackground\s*:\s*(?:true|!0|!!\[\])')
+# Anzeige der eigentlichen Pruefseite (Statuszeile, Fortschrittsbalken): nur
+# dort schreibt die Engine hinein. BEIDE da = Pruefseite, auch mit Flag.
+HOSTADMIN_PAGE_MARKERS = ('id="status"', 'id="pbar"')
 HOSTADMIN_TIME_LIMIT = 30
 # Rueckfall fuer den Mischwert, falls er sich nicht aus dem Modul lesen laesst
 # (Stand 09/2026; wird er gebraucht, steht es im Log).
@@ -183,83 +166,17 @@ HOSTADMIN_DATA = {
 }
 
 
-def local_ready():
-    """True, wenn lokal geloest werden darf — nur der Schalter zaehlt.
+def is_hostadmin_background(sHtml):
+    """True, wenn der WAF auf einer Inhaltsseite nur im Hintergrund mitlaeuft.
 
-    Bewusst nicht captcha_ready() aus dem Helper: der prueft auch den
-    Schluessel, und ohne Schluessel waere eine kostenlose Pruefung sonst
-    still abgeschaltet. Fehlt das Setting (Bestandsnutzer direkt nach dem
-    Update), gilt der Vorgabewert an — wie beim Dienst.
+    Engine-Marker plus gesetztes Hintergrund-Flag, aber ohne die Anzeige der
+    Pruefseite: der Inhalt ist da und gilt. Im Browser frischt so ein Lauf
+    nur die Freigabe auf; laeuft sie ab, kommt die normale Pruefseite
+    (isBackground: false) und wird wie bisher geloest.
     """
-    if cConfig().getSetting('captcha.enabled', 'true') != 'true':
-        logger.info('Captcha: Dienst ist in den Einstellungen abgeschaltet, kein lokales Loesen')
-        return False
-    return True
-
-
-def solve_altcha(sChallengeUrl, sReferer=''):
-    """Altcha-Challenge holen, rechnen, Antwort als base64-JSON liefern.
-
-    Ablauf wie im Altcha-Widget: GET auf die Challenge-Adresse liefert JSON mit
-    algorithm, challenge, salt, signature und maxnumber. Gesucht wird die Zahl n,
-    fuer die SHA-256(salt + n) gleich challenge ist. Die Antwort ist das
-    base64-kodierte JSON mit algorithm, challenge, number, salt, signature und
-    took — genau die Form, die das Widget in sein verstecktes Feld schreibt.
-    Die Signatur wird unveraendert zurueckgegeben, sie prueft der Server.
-
-    Args:
-        sChallengeUrl (str): Adresse, die die Challenge liefert
-        sReferer (str): Seite, auf der das Widget steht (Referer-Header)
-
-    Returns:
-        str: die Antwort fuers Formularfeld oder '' — der Aufrufer entscheidet,
-             ob er ohne das Feld weitermacht
-    """
-    if not local_ready():
-        return ''
-
-    # caching=False: jede Challenge gilt genau einmal (Salt mit Ablauf).
-    # ignoreErrors=True: ein Fehler hier bekommt kein eigenes Fenster — der
-    # Aufrufer fuehrt den Ablauf ohne das Feld fort und meldet selbst, wenn
-    # die Seite die Antwort nicht annimmt.
-    oRequest = cRequestHandler(sChallengeUrl, caching=False, ignoreErrors=True)
-    oRequest.addHeaderEntry('Accept', 'application/json')
-    if sReferer:
-        oRequest.addHeaderEntry('Referer', sReferer)
-    jChallenge = oRequest.requestJson()
-    if not isinstance(jChallenge, dict):
-        logger.error('Altcha: keine Challenge von %s' % sChallengeUrl)
-        return ''
-
-    sAlgorithm = str(jChallenge.get('algorithm', '')).upper()
-    sChallenge = str(jChallenge.get('challenge', '')).lower()
-    sSalt = str(jChallenge.get('salt', ''))
-    sSignature = str(jChallenge.get('signature', ''))
-    # Nur SHA-256: andere Algorithmen waeren ein neuer Fall und werden nicht
-    # geraten (das Widget kann auch SHA-1/SHA-512, die Seite nutzt SHA-256).
-    if sAlgorithm != 'SHA-256' or not (sChallenge and sSalt and sSignature):
-        logger.error('Altcha: unbekannte Challenge-Form (%s)' % sAlgorithm)
-        return ''
-    try:
-        iMaxNumber = int(jChallenge.get('maxnumber') or ALTCHA_DEFAULT_MAX_NUMBER)
-    except (TypeError, ValueError):
-        iMaxNumber = ALTCHA_DEFAULT_MAX_NUMBER
-
-    tStart = time.time()
-    sSaltBytes = sSalt.encode('utf-8')
-    for iNumber in range(iMaxNumber + 1):
-        if hashlib.sha256(sSaltBytes + str(iNumber).encode('utf-8')).hexdigest() == sChallenge:
-            iTook = int((time.time() - tStart) * 1000)
-            aPayload = {'algorithm': jChallenge.get('algorithm'), 'challenge': jChallenge.get('challenge'),
-                        'number': iNumber, 'salt': sSalt, 'signature': sSignature, 'took': iTook}
-            logger.info('Altcha geloest: Zahl %d nach %d ms' % (iNumber, iTook))
-            # Kompakt wie JSON.stringify im Browser (ohne Leerzeichen)
-            return base64.b64encode(json.dumps(aPayload, separators=(',', ':')).encode('utf-8')).decode('ascii')
-        if iNumber % 10000 == 0 and time.time() - tStart > ALTCHA_TIME_LIMIT:
-            logger.error('Altcha: Zeitgrenze von %d s erreicht bei Zahl %d' % (ALTCHA_TIME_LIMIT, iNumber))
-            return ''
-    logger.error('Altcha: keine Loesung bis %d' % iMaxNumber)
-    return ''
+    return (bool(sHtml) and any(sMarker in sHtml for sMarker in HOSTADMIN_MARKERS)
+            and HOSTADMIN_BACKGROUND.search(sHtml) is not None
+            and not all(sMarker in sHtml for sMarker in HOSTADMIN_PAGE_MARKERS))
 
 
 def is_hostadmin_gate(sHtml):
@@ -267,9 +184,11 @@ def is_hostadmin_gate(sHtml):
 
     Mehrere Marker, weil der WAF sie umbenennt: EINER genuegt. So bleibt die
     Erkennung stehen, wenn ein einzelnes Merkmal (etwa die Verify-Adresse)
-    aus dem sichtbaren HTML in das verschleierte Skript wandert.
+    aus dem sichtbaren HTML in das verschleierte Skript wandert. Eine Seite
+    mit Hintergrund-Lauf (is_hostadmin_background) ist KEINE Pruefseite.
     """
-    return bool(sHtml) and any(sMarker in sHtml for sMarker in HOSTADMIN_MARKERS)
+    return (bool(sHtml) and any(sMarker in sHtml for sMarker in HOSTADMIN_MARKERS)
+            and not is_hostadmin_background(sHtml))
 
 
 def _hostadmin_first(sHtml, aPatterns):
@@ -338,7 +257,9 @@ def _hostadmin_mix(aWasm):
     Das Modul haengt vor dem Hashen vier feste Bytes an den Payload. Sie stehen
     im Code als `i32.const <wert>` (0x41, SLEB128) direkt vor einem `i32.store`
     (0x36). Gesucht ist der eine Kandidat groesser 2^24, der nicht 0xffffffff
-    ist; alles andere sind Adressen und Zaehler.
+    ist; alles andere sind Adressen und Zaehler. Gegen das echte Modul
+    nachgerechnet (gleiche Nonces; SHA-256 des WASM 4266a1f0…9db, vom 20. bis
+    24.09.2026 unveraendert, .to und .com gleich).
     """
     for iPos in range(len(aWasm) - 6):
         if aWasm[iPos] != 0x41:
@@ -566,7 +487,8 @@ def solve_hostadmin(sHtml):
         sRoundSeed = sRoundSeed + '_' + str(iFound)
     iTook = int((time.time() - tStart) * 1000)
     logger.info('HostAdmin geloest (%s): %d Runde%s zu %d Bit nach %d ms' % (sScheme, iRounds, '' if iRounds == 1 else 'n', iBits, iTook))
-    aBody = {'fast': False, 'initialReqId': sReqId, 'ticket': sSeed}
+    # "fast" spiegelt das Hintergrund-Flag wie die Engine ("fast": isBackground === true).
+    aBody = {'fast': HOSTADMIN_BACKGROUND.search(sHtml) is not None, 'initialReqId': sReqId, 'ticket': sSeed}
     if bChain:
         aBody['nonces'] = aNonces
     else:
